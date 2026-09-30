@@ -1,0 +1,4 @@
+# Signés sur leurs octets exacts : git ne doit jamais les réécrire.
+irundoo-index.json -text
+irundoo-index.json.sig -text
+source.pub -text

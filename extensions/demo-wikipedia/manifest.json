@@ -1,0 +1,12 @@
+{
+  "format": "irundoo-extension-manifest",
+  "version": 1,
+  "id": "demo-wikipedia",
+  "name": "Wikipédia (démo)",
+  "extension_version": "1.0.0",
+  "publisher": "Démo IRUNDO",
+  "type": "link",
+  "entry_url": "https://fr.wikipedia.org/",
+  "icon": "fa-brands fa-wikipedia-w",
+  "description": "Extension de démonstration : une tuile vers Wikipédia."
+}
