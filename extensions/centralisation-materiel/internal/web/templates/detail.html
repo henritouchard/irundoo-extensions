@@ -1,0 +1,24 @@
+{{define "detail"}}<td colspan="6" id="detail-{{.Instance.Id}}" class="detail">
+  <h2>{{.Instance.Name}} — <span class="badge {{.Res.Etat}}">{{libelle .Res.Etat}}</span></h2>
+  {{with .Res.Motif}}<p>{{.}}</p>{{end}}
+  {{with .Mesure}}<p>Dernière mesure reçue <time datetime="{{iso .ReceivedAt}}">{{depuis .ReceivedAt}}</time> ({{iso .ReceivedAt}}), collectée le {{iso .CollectedAt}} par {{.ExtensionKey}} {{deref .ExtensionVersion}}.</p>{{end}}
+  {{with .Res.DemarreLe}}<p>Compteurs d'erreurs (E/S, mémoire) : depuis le démarrage du <time datetime="{{iso .}}">{{.Format "02/01/2006 15:04"}}</time> UTC.</p>{{end}}
+  {{if .Res.Signaux}}<h3>Signaux</h3><ul>{{range .Res.Signaux}}<li class="signal {{.Niveau}}">{{.Niveau}} : {{.Message}}</li>{{end}}</ul>{{end}}
+  {{range .Res.Mentions}}<p class="mention">{{.}}</p>{{end}}
+  {{if .Res.Ignores}}<p class="mention">{{.Res.Ignores}} valeur(s) de type inattendu non évaluée(s).</p>{{end}}
+  {{range .Sections}}{{$ent := .Entetes}}
+  <h3>{{.Titre}}</h3>
+  <table class="section">
+    <thead><tr>{{range .Entetes}}<th>{{.}}</th>{{end}}</tr></thead>
+    <tbody>{{range .Lignes}}<tr>{{range $i, $c := .}}<td>{{if and (lt $i (len $ent)) (eq (index $ent $i) "rempli")}}{{if $c}}<meter min="0" max="100" value="{{$c}}">{{$c}} %</meter> {{$c}} %{{end}}{{else}}{{$c}}{{end}}</td>{{end}}</tr>{{end}}</tbody>
+  </table>
+  {{end}}
+  <h3>Historique local (relève de fond, {{.Retention}} jours)</h3>
+  {{with .Historique}}
+    {{if .Count}}
+    <p>{{.Count}} mesure(s) conservée(s), du {{iso .First}} au {{iso .Last}}.</p>
+    {{if .BootChanges}}<p>Redémarrages constatés (changement de boot_id) :</p><ul>{{range .BootChanges}}<li>{{iso .}}</li>{{end}}</ul>{{end}}
+    {{if .SignauxPasses}}<p>Signaux levés aux relèves conservées :</p><ul>{{range .SignauxPasses}}<li class="signal {{.Niveau}}">{{.Message}} (vu en dernier le {{iso .Vu}})</li>{{end}}</ul>{{end}}
+    {{else}}<p>Aucune mesure conservée pour cet établissement.</p>{{end}}
+  {{end}}
+</td>{{end}}

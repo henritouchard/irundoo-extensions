@@ -1,0 +1,16 @@
+{{define "message"}}<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{.Titre}} — État matériel des établissements</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<main class="message{{if .Erreur}} erreur{{end}}">
+  <h1>{{.Titre}}</h1>
+  <p>{{.Texte}}</p>
+  {{with .Lien}}<p><a href="{{.}}">Revenir à l'application</a></p>{{end}}
+</main>
+</body>
+</html>{{end}}

@@ -1,0 +1,56 @@
+{{define "page"}}<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="htmx-config" content='{"includeIndicatorStyles":false,"allowEval":false,"allowScriptTags":false}'>
+<title>État matériel des établissements</title>
+<link rel="stylesheet" href="/static/app.css">
+<script src="/static/htmx.min.js"></script>
+</head>
+<body>
+<header class="entete">
+  <h1>État matériel des établissements</h1>
+  <div class="utilisateur">{{.Nom}} · <a href="/logout">Déconnexion</a></div>
+</header>
+<main>
+{{template "liste" .}}
+</main>
+</body>
+</html>{{end}}
+
+{{define "liste"}}<section id="liste" hx-get="/partials/liste" hx-trigger="every 60s" hx-swap="outerHTML">
+  {{template "bandeaux" .}}
+  <p class="compteurs">
+    <span class="badge critique">critique : {{index .Compteur "critique"}}</span>
+    <span class="badge attention">attention : {{index .Compteur "attention"}}</span>
+    <span class="badge pas-de-nouvelle">pas de nouvelle : {{index .Compteur "pas-de-nouvelle"}}</span>
+    <span class="badge non-observe">matériel non observé : {{index .Compteur "non-observe"}}</span>
+    <span class="badge sain">sain : {{index .Compteur "sain"}}</span>
+  </p>
+  <table class="etablissements">
+    <thead><tr><th>Établissement</th><th>État</th><th>Dernière mesure</th><th>Profil</th><th>Résumé</th><th></th></tr></thead>
+    <tbody>
+    {{range .Lignes}}{{template "ligne" .}}{{end}}
+    </tbody>
+  </table>
+</section>{{end}}
+
+{{define "bandeaux"}}
+  {{with .Releve}}
+    {{if .EchecDepuis}}<p class="bandeau echec" role="status">Relève de fond en échec : {{.LastEchec.Motif}} (depuis le <time datetime="{{iso .EchecDepuis}}">{{.EchecDepuis.Format "02/01/2006 15:04"}}</time> UTC){{if .LastOK}} ; dernière relève réussie <time datetime="{{iso .LastOK.FinishedAt}}">{{depuis .LastOK.FinishedAt}}</time>{{end}}.</p>
+    {{else if .LastOK}}<p class="bandeau info" role="status">Dernière relève réussie <time datetime="{{iso .LastOK.FinishedAt}}">{{depuis .LastOK.FinishedAt}}</time>.</p>
+    {{else}}<p class="bandeau info" role="status">Aucune relève de fond encore effectuée.</p>{{end}}
+  {{end}}
+  {{if .Reduced}}<p class="bandeau attention" role="status">Périmètre réduit par l'administrateur depuis l'ouverture de la session.</p>{{end}}
+{{end}}
+
+{{define "ligne"}}<tr id="ligne-{{.Instance.Id}}" class="{{if not .Instance.Active}}inactif{{end}}">
+  <td><strong>{{.Instance.Name}}</strong><br><small>UAI {{deref .Instance.Uai}} · {{deref .Instance.EstablishmentType}} · {{deref .Instance.AcademicZone}}{{if not .Instance.Active}} · désactivé dans IRUNDO{{end}}</small></td>
+  <td><span class="badge {{.Res.Etat}}">{{libelle .Res.Etat}}</span>{{with .Res.Motif}}<br><small>{{.}}</small>{{end}}</td>
+  <td>{{with .Mesure}}<time datetime="{{iso .ReceivedAt}}" title="{{iso .ReceivedAt}}">{{depuis .ReceivedAt}}</time>{{else}}—{{end}}</td>
+  <td>{{with .Res.Profil}}{{.}}{{else}}—{{end}}</td>
+  <td>{{range .Resume}}<div class="signal {{.Niveau}}">{{.Message}}</div>{{end}}{{range .Res.Mentions}}<div class="mention">{{.}}</div>{{end}}</td>
+  <td><button type="button" hx-get="/etablissements/{{.Instance.Id}}" hx-target="#detail-{{.Instance.Id}}" hx-swap="outerHTML">détail</button></td>
+</tr>
+<tr class="detail-vide"><td colspan="6" id="detail-{{.Instance.Id}}"></td></tr>{{end}}

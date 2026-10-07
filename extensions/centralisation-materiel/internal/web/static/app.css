@@ -1,0 +1,27 @@
+:root { --critique: #b00020; --attention: #a15c00; --pdn: #4a4a4a; --nonobs: #3b5b8a; --sain: #1b6e2e; }
+body { font-family: system-ui, sans-serif; margin: 0; color: #1d1d1d; background: #fafafa; }
+.entete { display: flex; justify-content: space-between; align-items: baseline; padding: .75rem 1rem; background: #20262e; color: #fff; }
+.entete a { color: #cfe3ff; }
+.entete h1 { font-size: 1.2rem; margin: 0; }
+main { padding: 1rem; }
+table { border-collapse: collapse; width: 100%; background: #fff; }
+th, td { border-bottom: 1px solid #ddd; padding: .4rem .5rem; text-align: left; vertical-align: top; }
+tr.inactif { opacity: .6; }
+.badge { display: inline-block; padding: .1rem .45rem; border-radius: .25rem; color: #fff; font-size: .85rem; }
+.badge.critique { background: var(--critique); }
+.badge.attention { background: var(--attention); }
+.badge.pas-de-nouvelle { background: var(--pdn); }
+.badge.non-observe { background: var(--nonobs); }
+.badge.sain { background: var(--sain); }
+.signal.critique { color: var(--critique); }
+.signal.attention { color: var(--attention); }
+.mention { color: #555; font-style: italic; }
+.bandeau { padding: .5rem .75rem; border-left: .3rem solid; background: #fff; }
+.bandeau.echec { border-color: var(--critique); }
+.bandeau.attention { border-color: var(--attention); }
+.bandeau.info { border-color: var(--nonobs); }
+.compteurs .badge { margin-right: .3rem; }
+td.detail { background: #f3f5f8; }
+table.section { margin-bottom: 1rem; font-size: .9rem; }
+.message { max-width: 40rem; margin: 3rem auto; background: #fff; padding: 1.5rem; }
+.message.erreur h1 { color: var(--critique); }
