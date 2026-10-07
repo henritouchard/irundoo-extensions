@@ -1,0 +1,17 @@
+# Terminaison TLS devant la centralisatrice (elle écoute en HTTP sur 127.0.0.1:8090).
+# Le certificat doit être reconnu par le magasin du conteneur IRUNDO (sonde de santé, TLS vérifié).
+centralisation-materiel.example.org {
+	reverse_proxy 127.0.0.1:8090
+}
+
+# Équivalent nginx :
+# server {
+#     listen 443 ssl http2;
+#     server_name centralisation-materiel.example.org;
+#     ssl_certificate     /etc/ssl/…/fullchain.pem;
+#     ssl_certificate_key /etc/ssl/…/privkey.pem;
+#     location / {
+#         proxy_pass http://127.0.0.1:8090;
+#         proxy_set_header Host $host;
+#     }
+# }

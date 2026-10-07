@@ -1,0 +1,38 @@
+# Unité systemd de la centralisatrice (hôte Debian). Non activée par défaut :
+#   install -m 0755 bin/centralisation-materiel /usr/local/bin/
+#   install -m 0644 deploy/centralisation-materiel.service /etc/systemd/system/
+#   install -d -m 0700 /etc/centralisation-materiel
+#   install -m 0600 /dev/null /etc/centralisation-materiel/env   # puis le remplir (README)
+#   systemctl daemon-reload && systemctl enable --now centralisation-materiel
+[Unit]
+Description=Centralisatrice matérielle (extension IRUNDO)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/centralisation-materiel
+EnvironmentFile=/etc/centralisation-materiel/env
+DynamicUser=yes
+StateDirectory=centralisation-materiel
+StateDirectoryMode=0700
+UMask=0077
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+NoNewPrivileges=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

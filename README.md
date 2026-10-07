@@ -22,6 +22,13 @@ php artisan ext:sources:add https://raw.githubusercontent.com/henritouchard/irun
   --fingerprint=sha256:c168-4681-3ecc-ecf7 --token-stdin
 ```
 
+## Extensions
+
+| Dossier | Type | Rôle |
+|---|---|---|
+| `extensions/demo-wikipedia/` | `link` | démonstration : une tuile vers Wikipédia |
+| `extensions/centralisation-materiel/` | `app` | état matériel des établissements du périmètre (service Go, voir son README) ; seul `manifest.json` entre dans l'index, le code vit à côté |
+
 ## Publier
 
 1. Ajouter ou modifier `extensions/<id>/manifest.json` (le dossier porte l'`id`).

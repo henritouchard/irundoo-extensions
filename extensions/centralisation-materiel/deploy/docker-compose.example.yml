@@ -1,0 +1,24 @@
+# Exemple : la centralisatrice derrière un proxy TLS (deploy/Caddyfile.example).
+# Le secret client est un fichier 0600 monté en lecture seule, jamais une variable en clair ici.
+services:
+  centralisation-materiel:
+    image: centralisation-materiel:0.1.0
+    restart: unless-stopped
+    environment:
+      IRUNDOO_ISSUER: https://irundo.example.org/controlhub
+      CLIENT_ID: "<32 hex remis par ext:client:register>"
+      CLIENT_SECRET_FILE: /run/secrets/client_secret
+      PUBLIC_URL: https://centralisation-materiel.example.org
+      LISTEN: 0.0.0.0:8090
+      DATA_DIR: /var/lib/centralisation-materiel
+    volumes:
+      - centralisation-materiel:/var/lib/centralisation-materiel
+    secrets:
+      - client_secret
+    ports:
+      - "127.0.0.1:8090:8090"   # le proxy TLS seul y accède
+secrets:
+  client_secret:
+    file: ./client_secret        # chmod 600
+volumes:
+  centralisation-materiel:
