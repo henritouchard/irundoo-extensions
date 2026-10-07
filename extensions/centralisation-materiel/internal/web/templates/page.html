@@ -7,13 +7,15 @@
 <title>État matériel des établissements</title>
 <link rel="stylesheet" href="/static/app.css">
 <script src="/static/htmx.min.js"></script>
+<script src="/static/app.js" defer></script>
 </head>
 <body>
 <header class="entete">
   <h1>État matériel des établissements</h1>
-  <div class="utilisateur">{{.Nom}} · <a href="/logout">Déconnexion</a></div>
+  <form class="utilisateur" method="post" action="/logout">{{.Nom}} · <input type="hidden" name="csrf" value="{{.CSRF}}"><button type="submit">Déconnexion</button></form>
 </header>
 <main>
+<p id="erreur-htmx" class="bandeau echec" role="alert" hidden></p>
 {{template "liste" .}}
 </main>
 </body>
@@ -48,9 +50,9 @@
 {{define "ligne"}}<tr id="ligne-{{.Instance.Id}}" class="{{if not .Instance.Active}}inactif{{end}}">
   <td><strong>{{.Instance.Name}}</strong><br><small>UAI {{deref .Instance.Uai}} · {{deref .Instance.EstablishmentType}} · {{deref .Instance.AcademicZone}}{{if not .Instance.Active}} · désactivé dans IRUNDO{{end}}</small></td>
   <td><span class="badge {{.Res.Etat}}">{{libelle .Res.Etat}}</span>{{with .Res.Motif}}<br><small>{{.}}</small>{{end}}</td>
-  <td>{{with .Mesure}}<time datetime="{{iso .ReceivedAt}}" title="{{iso .ReceivedAt}}">{{depuis .ReceivedAt}}</time>{{else}}—{{end}}</td>
+  <td>{{if .Mesure}}<time datetime="{{iso .Res.Reference}}" title="collectée {{iso .Mesure.CollectedAt}}, reçue {{iso .Mesure.ReceivedAt}}">collectée {{depuis .Res.Reference}}</time>{{else}}—{{end}}</td>
   <td>{{with .Res.Profil}}{{.}}{{else}}—{{end}}</td>
   <td>{{range .Resume}}<div class="signal {{.Niveau}}">{{.Message}}</div>{{end}}{{range .Res.Mentions}}<div class="mention">{{.}}</div>{{end}}</td>
   <td><button type="button" hx-get="/etablissements/{{.Instance.Id}}" hx-target="#detail-{{.Instance.Id}}" hx-swap="outerHTML">détail</button></td>
 </tr>
-<tr class="detail-vide"><td colspan="6" id="detail-{{.Instance.Id}}"></td></tr>{{end}}
+<tr class="detail-vide"><td colspan="6" id="detail-{{.Instance.Id}}" hx-preserve="true"></td></tr>{{end}}

@@ -34,14 +34,20 @@ type Store struct {
 	path string
 	// Now est l'horloge (remplaçable en test).
 	Now func() time.Time
+	// MaxAttempts : plafond des tentatives OIDC en vol (0 ⇒ DefaultMaxAttempts).
+	MaxAttempts int
 }
 
-const ts = time.RFC3339Nano
+// ts : horodatage à largeur fixe (UTC, neuf décimales, « Z ») — l'ordre lexical des chaînes est
+// l'ordre chronologique, ce dont dépendent les ORDER BY et les comparaisons de purge. RFC3339Nano
+// retire les zéros finaux (« …05.5Z » > « …05.123Z ») et casse cet ordre.
+const ts = "2006-01-02T15:04:05.000000000Z"
 
 func fmtT(t time.Time) string { return t.UTC().Format(ts) }
 
+// parseT lit la largeur fixe comme les valeurs RFC 3339 plus courtes (antérieures à la migration 0002).
 func parseT(s string) time.Time {
-	t, _ := time.Parse(ts, s)
+	t, _ := time.Parse(time.RFC3339Nano, s)
 	return t
 }
 
@@ -87,46 +93,75 @@ func (s *Store) Close() error {
 // Path du fichier SQLite.
 func (s *Store) Path() string { return s.path }
 
-func migrationFiles() ([]string, error) {
+// etape : une migration, en SQL (fichier embarqué) ou en Go (réécriture de valeurs).
+type etape struct {
+	nom string
+	sql string
+	fn  func(ctx context.Context, tx *sql.Tx) error
+}
+
+// etapesGo : migrations écrites en Go, rangées par nom avec les fichiers SQL.
+var etapesGo = map[string]func(ctx context.Context, tx *sql.Tx) error{
+	"0002_horodatages_largeur_fixe": normaliserHorodatages,
+}
+
+func etapes() ([]etape, error) {
 	names, err := migrations.ReadDir("migrations")
 	if err != nil {
 		return nil, err
 	}
-	var out []string
+	var out []etape
 	for _, n := range names {
-		out = append(out, n.Name())
+		b, err := migrations.ReadFile("migrations/" + n.Name())
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, etape{nom: n.Name(), sql: string(b)})
 	}
-	sort.Strings(out)
+	for nom, fn := range etapesGo {
+		out = append(out, etape{nom: nom, fn: fn})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].nom < out[j].nom })
 	return out, nil
 }
 
 // Version : nombre de migrations embarquées (le schéma attendu).
 func Version() int {
-	f, _ := migrationFiles()
-	return len(f)
+	e, _ := etapes()
+	return len(e)
 }
 
 func (s *Store) migrate(ctx context.Context) error {
-	files, err := migrationFiles()
+	return s.migrateTo(ctx, -1)
+}
+
+// migrateTo applique les migrations jusqu'à la version max (-1 : toutes) ; max sert aux tests de
+// migration.
+func (s *Store) migrateTo(ctx context.Context, max int) error {
+	steps, err := etapes()
 	if err != nil {
 		return err
+	}
+	if max < 0 || max > len(steps) {
+		max = len(steps)
 	}
 	var cur int
 	if err := s.w.QueryRowContext(ctx, "PRAGMA user_version").Scan(&cur); err != nil {
 		return err
 	}
-	for i := cur; i < len(files); i++ {
-		sqlText, err := migrations.ReadFile("migrations/" + files[i])
-		if err != nil {
-			return err
-		}
+	for i := cur; i < max; i++ {
 		tx, err := s.w.BeginTx(ctx, nil)
 		if err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, string(sqlText)); err != nil {
+		if steps[i].fn != nil {
+			err = steps[i].fn(ctx, tx)
+		} else {
+			_, err = tx.ExecContext(ctx, steps[i].sql)
+		}
+		if err != nil {
 			_ = tx.Rollback()
-			return fmt.Errorf("migration %s : %w", files[i], err)
+			return fmt.Errorf("migration %s : %w", steps[i].nom, err)
 		}
 		if _, err := tx.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version = %d", i+1)); err != nil {
 			_ = tx.Rollback()
@@ -134,6 +169,63 @@ func (s *Store) migrate(ctx context.Context) error {
 		}
 		if err := tx.Commit(); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+// colonnesHorodatees : toutes les colonnes d'horodatage du schéma.
+var colonnesHorodatees = map[string][]string{
+	"instances":    {"first_seen_at", "last_seen_at"},
+	"measurements": {"collected_at", "received_at", "inserted_at"},
+	"releves":      {"started_at", "finished_at"},
+	"sessions":     {"token_exp", "created_at", "last_seen_at"},
+	"attempts":     {"created_at"},
+}
+
+// normaliserHorodatages (migration 0002) réécrit en largeur fixe les valeurs RFC3339Nano écrites
+// par la version 0.1.0 (zéros finaux retirés). Une valeur illisible est laissée telle quelle.
+func normaliserHorodatages(ctx context.Context, tx *sql.Tx) error {
+	tables := make([]string, 0, len(colonnesHorodatees))
+	for t := range colonnesHorodatees {
+		tables = append(tables, t)
+	}
+	sort.Strings(tables)
+	for _, table := range tables {
+		for _, col := range colonnesHorodatees[table] {
+			rows, err := tx.QueryContext(ctx, fmt.Sprintf("SELECT rowid, %s FROM %s", col, table))
+			if err != nil {
+				return err
+			}
+			type maj struct {
+				id int64
+				v  string
+			}
+			var majs []maj
+			for rows.Next() {
+				var id int64
+				var v string
+				if err := rows.Scan(&id, &v); err != nil {
+					rows.Close()
+					return err
+				}
+				t, err := time.Parse(time.RFC3339Nano, v)
+				if err != nil {
+					continue
+				}
+				if f := fmtT(t); f != v {
+					majs = append(majs, maj{id, f})
+				}
+			}
+			rows.Close()
+			if err := rows.Err(); err != nil {
+				return err
+			}
+			for _, m := range majs {
+				if _, err := tx.ExecContext(ctx, fmt.Sprintf("UPDATE %s SET %s = ? WHERE rowid = ?", table, col), m.v, m.id); err != nil {
+					return err
+				}
+			}
 		}
 	}
 	return nil
@@ -158,10 +250,19 @@ type Instance struct {
 	Active                                          bool
 }
 
+// execer : *sql.DB ou *sql.Tx.
+type execer interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
 // UpsertInstance : nom, UAI, actif, vu à. Une instance disparue du périmètre garde sa ligne (NFR11).
 func (s *Store) UpsertInstance(ctx context.Context, in Instance) error {
+	return s.upsertInstance(ctx, s.w, in)
+}
+
+func (s *Store) upsertInstance(ctx context.Context, x execer, in Instance) error {
 	now := fmtT(s.Now())
-	_, err := s.w.ExecContext(ctx, `INSERT INTO instances (id, name, uai, establishment_name, establishment_type, academic_zone, active, first_seen_at, last_seen_at)
+	_, err := x.ExecContext(ctx, `INSERT INTO instances (id, name, uai, establishment_name, establishment_type, academic_zone, active, first_seen_at, last_seen_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET name=excluded.name, uai=excluded.uai, establishment_name=excluded.establishment_name,
 		establishment_type=excluded.establishment_type, academic_zone=excluded.academic_zone, active=excluded.active, last_seen_at=excluded.last_seen_at`,
@@ -184,6 +285,36 @@ type Measure struct {
 // Un boot_id différent du dernier connu pour l'instance est consigné sur l'instance (last_boot_id) ;
 // l'historique le retrouve par la suite des mesures.
 func (s *Store) Insert(ctx context.Context, m Measure) (bool, error) {
+	return s.insert(ctx, s.w, m)
+}
+
+// EnregistrerPassage : les instances et les mesures d'un passage de la relève, en une transaction
+// (un seul fsync, et jamais un passage à moitié écrit). Retourne le nombre de mesures nouvelles.
+func (s *Store) EnregistrerPassage(ctx context.Context, ins []Instance, ms []Measure) (int, error) {
+	tx, err := s.w.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	for _, in := range ins {
+		if err := s.upsertInstance(ctx, tx, in); err != nil {
+			return 0, err
+		}
+	}
+	n := 0
+	for _, m := range ms {
+		ok, err := s.insert(ctx, tx, m)
+		if err != nil {
+			return 0, err
+		}
+		if ok {
+			n++
+		}
+	}
+	return n, tx.Commit()
+}
+
+func (s *Store) insert(ctx context.Context, x execer, m Measure) (bool, error) {
 	var boot any
 	if m.BootID != "" {
 		boot = m.BootID
@@ -192,7 +323,7 @@ func (s *Store) Insert(ctx context.Context, m Measure) (bool, error) {
 	if sig == nil {
 		sig = []byte("[]")
 	}
-	res, err := s.w.ExecContext(ctx, `INSERT OR IGNORE INTO measurements
+	res, err := x.ExecContext(ctx, `INSERT OR IGNORE INTO measurements
 		(instance_id, extension_key, extension_version, message_id, kind, collected_at, received_at, payload, etat, signaux, boot_id, inserted_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		m.InstanceID, m.ExtensionKey, m.ExtensionVersion, m.MessageID, m.Kind, fmtT(m.CollectedAt), fmtT(m.ReceivedAt),
@@ -205,7 +336,7 @@ func (s *Store) Insert(ctx context.Context, m Measure) (bool, error) {
 		return false, err
 	}
 	if m.BootID != "" {
-		_, err = s.w.ExecContext(ctx, `UPDATE instances SET last_boot_id = ? WHERE id = ?`, m.BootID, m.InstanceID)
+		_, err = x.ExecContext(ctx, `UPDATE instances SET last_boot_id = ? WHERE id = ?`, m.BootID, m.InstanceID)
 	}
 	return true, err
 }
@@ -365,6 +496,13 @@ const SessionIdle = 12 * time.Hour
 // AttemptTTL : durée de vie d'une tentative OIDC.
 const AttemptTTL = 5 * time.Minute
 
+// DefaultMaxAttempts : plafond des tentatives OIDC en vol (créées sans authentification : sans
+// plafond, un client anonyme remplirait le disque).
+const DefaultMaxAttempts = 1000
+
+// ErrTropDeTentatives : le plafond des tentatives en vol est atteint.
+var ErrTropDeTentatives = errors.New("trop de tentatives de connexion en cours")
+
 // Session : session serveur de l'utilisateur (cookie opaque = ID).
 type Session struct {
 	ID, Sub, Name string
@@ -421,11 +559,34 @@ type Attempt struct {
 	CreatedAt time.Time
 }
 
-// CreateAttempt enregistre une tentative.
+// CreateAttempt enregistre une tentative : purge d'abord les tentatives expirées, puis refuse
+// (ErrTropDeTentatives) au-delà de MaxAttempts en vol.
 func (s *Store) CreateAttempt(ctx context.Context, a Attempt) error {
-	_, err := s.w.ExecContext(ctx, `INSERT INTO attempts (id, state, nonce, verifier, prompt_none, relance, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		a.ID, a.State, a.Nonce, a.Verifier, a.PromptNone, a.Relance, fmtT(s.Now()))
-	return err
+	tx, err := s.w.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	now := s.Now()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM attempts WHERE created_at < ?`, fmtT(now.Add(-AttemptTTL))); err != nil {
+		return err
+	}
+	var n int
+	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM attempts`).Scan(&n); err != nil {
+		return err
+	}
+	max := s.MaxAttempts
+	if max <= 0 {
+		max = DefaultMaxAttempts
+	}
+	if n >= max {
+		return ErrTropDeTentatives
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO attempts (id, state, nonce, verifier, prompt_none, relance, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		a.ID, a.State, a.Nonce, a.Verifier, a.PromptNone, a.Relance, fmtT(now)); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // TakeAttempt lit et supprime une tentative (usage unique) ; nil si absente ou périmée.

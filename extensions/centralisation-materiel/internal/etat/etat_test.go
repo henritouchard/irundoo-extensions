@@ -40,7 +40,16 @@ func cles(r Resultat) []string {
 	for _, s := range r.Signaux {
 		out = append(out, s.Niveau+":"+s.Cle)
 	}
+	for _, s := range r.SignauxHote {
+		out = append(out, "hote:"+s.Niveau+":"+s.Cle)
+	}
 	return out
+}
+
+// propre : la carte Redfish est celle de la machine (scope self) — ses signaux font l'état.
+func propre(m map[string]any) map[string]any {
+	m["redfish"].(map[string]any)["scope"] = "self"
+	return m
 }
 
 func TestCompute(t *testing.T) {
@@ -56,10 +65,16 @@ func TestCompute(t *testing.T) {
 	}{
 		{"vm.json : VM sans source matérielle", modif(t, vm, func(map[string]any) {}), frais, NonObserve, nil, ""},
 		{"physical.json : physique, canal local seul", modif(t, phys, func(map[string]any) {}), frais, Sain, nil, "disques derrière contrôleur : inventaire seulement"},
-		{"redfish.json : PSU critique, panne prédite", modif(t, rf, func(map[string]any) {}), frais, Critique,
+		{"redfish.json : carte de l'hôte de virtualisation, PSU critique", modif(t, rf, func(map[string]any) {}), frais, NonObserve,
+			[]string{"hote:critique:redfish.power.supplies[PS2 Status].health", "hote:critique:redfish.power.redundancy",
+				"hote:critique:redfish.drive[Disk.Bay.3].failure_predicted", "hote:attention:redfish.sel_tail[PSU0003]"},
+			MentionHote + " : critique — redondance d'alimentation : Degraded"},
+		{"redfish.json, carte propre (scope self) : PSU critique, panne prédite", modif(t, rf, func(m map[string]any) { propre(m) }), frais, Critique,
 			[]string{"critique:redfish.power.supplies[PS2 Status].health", "critique:redfish.power.redundancy",
 				"critique:redfish.drive[Disk.Bay.3].failure_predicted", "critique:redfish.drive[Disk.Bay.3].health",
 				"attention:redfish.system.health_rollup", "attention:redfish.sel_tail[PSU0003]"}, ""},
+		{"physique, Redfish refusé : sain, mention de la source", modif(t, phys, func(map[string]any) {}), frais, Sain, nil, "source redfish : unauthorized"},
+		{"VM : sources absentes nommées", modif(t, vm, func(map[string]any) {}), frais, NonObserve, nil, "source pve : absent"},
 		{"mesure ancienne", modif(t, phys, func(map[string]any) {}), now.Add(-31 * time.Minute), PasDeNouvelle, nil, ""},
 		{"sources absente, VM", modif(t, vm, func(m map[string]any) { delete(m, "sources") }), frais, NonObserve, nil, "sources non renseignées"},
 		{"VM avec Redfish ok (carte de l'hôte)", modif(t, vm, func(m map[string]any) { m["sources"].(map[string]any)["redfish"] = "ok" }), frais, Sain, nil, ""},
@@ -109,7 +124,7 @@ func TestCompute(t *testing.T) {
 			m["pve"] = map[string]any{"disk": []any{map[string]any{"devpath": "/dev/sda", "wearout_pct": 5.0}}}
 		}), frais, Attention, []string{"attention:pve.disk[/dev/sda].wearout_pct"}, ""},
 		{"Redfish ventilateur et barrette", modif(t, rf, func(m map[string]any) {
-			r := m["redfish"].(map[string]any)
+			r := propre(m)["redfish"].(map[string]any)
 			delete(r, "power")
 			delete(r, "sel_tail")
 			r["system"].(map[string]any)["health_rollup"] = "OK"
@@ -118,14 +133,14 @@ func TestCompute(t *testing.T) {
 			r["memory"] = []any{map[string]any{"id": "DIMM.A1", "capacity_mib": 16384.0, "health": "Critical"}}
 		}), frais, Attention, []string{"attention:redfish.thermal.fans[Fan1A].health", "attention:redfish.memory[DIMM.A1].health"}, ""},
 		{"SEL ancien ignoré", modif(t, rf, func(m map[string]any) {
-			r := m["redfish"].(map[string]any)
+			r := propre(m)["redfish"].(map[string]any)
 			r["sel_tail"].([]any)[0].(map[string]any)["timestamp"] = "2026-09-01T10:00:00Z"
 			delete(r, "power")
 			r["drive"] = []any{}
 			r["system"].(map[string]any)["health_rollup"] = "OK"
 		}), frais, Sain, nil, ""},
 		{"système Critical", modif(t, rf, func(m map[string]any) {
-			m["redfish"].(map[string]any)["system"].(map[string]any)["health"] = "Critical"
+			propre(m)["redfish"].(map[string]any)["system"].(map[string]any)["health"] = "Critical"
 		}), frais, Critique, []string{"critique:redfish.system.health"}, ""},
 	}
 	for _, c := range cas {
@@ -143,6 +158,52 @@ func TestCompute(t *testing.T) {
 				t.Errorf("mention %q absente de %v", c.mention, r.Mentions)
 			}
 		})
+	}
+}
+
+// Un critique devenu silencieux reste compté critique et le dit ; un attention silencieux est
+// « pas de nouvelle ».
+func TestCritiqueSilencieux(t *testing.T) {
+	phys := exemple(t, "physical")
+	p := modif(t, phys, func(m map[string]any) {
+		m["md"] = []any{map[string]any{"name": "md0", "degraded": true, "array_state": "clean"}}
+	})
+	r := Compute(now, &Mesure{ReceivedAt: now.Add(-2 * time.Hour), Payload: p}, 30*time.Minute)
+	if r.Etat != Critique || !r.Silencieux || !strings.HasPrefix(r.Motif, "pas de nouvelle — dernier état connu : critique") || !strings.Contains(r.Motif, "2 h") {
+		t.Fatalf("%+v", r)
+	}
+	p = modif(t, phys, func(m map[string]any) { m["disk"].([]any)[1].(map[string]any)["ioerr"] = 3.0 })
+	r = Compute(now, &Mesure{ReceivedAt: now.Add(-2 * time.Hour), Payload: p}, 30*time.Minute)
+	if r.Etat != PasDeNouvelle || r.Silencieux {
+		t.Fatalf("%+v", r)
+	}
+	// Le critique de la carte d'un hôte de virtualisation ne fait pas l'état de l'établissement.
+	r = Compute(now, &Mesure{ReceivedAt: now.Add(-2 * time.Hour), Payload: modif(t, exemple(t, "redfish"), func(map[string]any) {})}, 30*time.Minute)
+	if r.Etat != PasDeNouvelle || len(r.SignauxHote) == 0 {
+		t.Fatalf("%+v", r)
+	}
+}
+
+// La fraîcheur se juge sur least(collected_at, received_at) : un vieux lot relayé tard n'a pas
+// l'air frais ; une horloge d'établissement en avance ne rajeunit rien.
+func TestFraicheurLeast(t *testing.T) {
+	p, _ := os.ReadFile("../../testdata/hardware/physical.json")
+	r := Compute(now, &Mesure{CollectedAt: now.Add(-2 * time.Hour), ReceivedAt: now.Add(-time.Minute), Payload: p}, 30*time.Minute)
+	if r.Etat != PasDeNouvelle || !r.Reference.Equal(now.Add(-2*time.Hour)) {
+		t.Fatalf("%+v", r)
+	}
+	r = Compute(now, &Mesure{CollectedAt: now.Add(time.Hour), ReceivedAt: now.Add(-time.Minute), Payload: p}, 30*time.Minute)
+	if r.Etat != Sain || !r.Reference.Equal(now.Add(-time.Minute)) {
+		t.Fatalf("%+v", r)
+	}
+	a := Mesure{CollectedAt: now.Add(-10 * time.Minute), ReceivedAt: now}
+	b := Mesure{CollectedAt: now.Add(-5 * time.Minute), ReceivedAt: now.Add(-4 * time.Minute)}
+	if PlusRecente(a, b) || !PlusRecente(b, a) {
+		t.Fatal("ordre least(collected_at, received_at)")
+	}
+	c := Mesure{CollectedAt: now.Add(-5 * time.Minute), ReceivedAt: now}
+	if !PlusRecente(c, b) {
+		t.Fatal("départage par received_at")
 	}
 }
 

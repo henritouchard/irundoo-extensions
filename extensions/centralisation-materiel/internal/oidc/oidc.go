@@ -2,14 +2,17 @@
 // (fournisseur-oidc.md § 2-6, § 4.2 bis ; guide-developpeur.md § 3, § 16) :
 //
 //   - Discovery obligatoire (aucun chemin /oidc/* codé), issuer comparé à IRUNDOO_ISSUER, mise en
-//     cache une heure ; JWKS relu sur `kid` inconnu (KeySet de go-oidc) ;
+//     cache une heure, une seule lecture en vol (le verrou n'est pas tenu pendant l'appel réseau),
+//     cache périmé réutilisé si IRUNDO ne répond pas (stale-if-error) ; JWKS relu sur `kid` inconnu
+//     (KeySet de go-oidc) ;
 //   - flot utilisateur `authorization_code` + PKCE S256, client confidentiel en
 //     `client_secret_basic` seul, `state` / `nonce` / `code_verifier` neufs par tentative,
 //     `iss` de la réponse vérifié (RFC 9207), `id_token` vérifié (RS256 épinglé, iss, aud, exp,
 //     nonce, typ JWT), scope accordé comparé au demandé ;
 //   - jeton machine `client_credentials`, réutilisé jusqu'à `exp − 30 s`.
 //
-// L'access token reste opaque : il n'est jamais décodé.
+// L'access token reste opaque : il n'est jamais décodé. Une erreur du token_endpoint ne remonte
+// jamais son corps brut : statut et code OAuth assaini seulement (ErrTokenEndpoint).
 package oidc
 
 import (
@@ -59,6 +62,80 @@ var ErrMachineScope = errors.New("scopes machine non accordés")
 // ErrCallback : retour d'autorisation invalide (state, iss, code absent).
 var ErrCallback = errors.New("retour d'autorisation invalide")
 
+// ErrInvalidClient : `invalid_client` au token_endpoint (client révoqué, secret changé) —
+// fournisseur-oidc.md § 11.5 : consigner et cesser.
+var ErrInvalidClient = errors.New("client refusé par IRUNDO (invalid_client)")
+
+// ErrTokenEndpoint : refus du token_endpoint, réduit au statut et au code OAuth assaini (le corps
+// brut, qui peut tout contenir, n'est ni gardé ni journalisé).
+type ErrTokenEndpoint struct {
+	Status int
+	Code   string
+}
+
+func (e *ErrTokenEndpoint) Error() string {
+	if e.Code == "" {
+		return fmt.Sprintf("token_endpoint : HTTP %d", e.Status)
+	}
+	return fmt.Sprintf("token_endpoint : HTTP %d (%s)", e.Status, e.Code)
+}
+
+// codesOAuth : les codes d'erreur du token_endpoint repris tels quels (RFC 6749 § 5.2 et
+// fournisseur-oidc.md § 3) ; tout autre code est remplacé par « code inconnu ».
+var codesOAuth = []string{"invalid_request", "invalid_client", "invalid_grant", "unauthorized_client",
+	"unsupported_grant_type", "invalid_scope", "server_error", "temporarily_unavailable", "access_denied"}
+
+// assainir : le code OAuth s'il est connu, « code inconnu » sinon, "" s'il est absent. Rien du
+// corps ne passe autrement.
+func assainir(code string) string {
+	switch {
+	case code == "":
+		return ""
+	case slices.Contains(codesOAuth, code):
+		return code
+	}
+	return "code inconnu"
+}
+
+// tokenErr traduit une erreur d'oauth2 sans en garder le corps.
+func tokenErr(quoi string, err error) error {
+	var re *oauth2.RetrieveError
+	if errors.As(err, &re) {
+		code := assainir(re.ErrorCode)
+		status := 0
+		if re.Response != nil {
+			status = re.Response.StatusCode
+		}
+		switch {
+		case code == "invalid_scope":
+			return ErrMachineScope
+		case code == "invalid_client" || (code == "" && status == http.StatusUnauthorized):
+			return ErrInvalidClient
+		}
+		return &ErrTokenEndpoint{Status: status, Code: code}
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return fmt.Errorf("%s : %w", quoi, err)
+	}
+	return fmt.Errorf("%s : IRUNDO injoignable (%s)", quoi, Borne(err.Error(), 160))
+}
+
+// Borne : message d'erreur réduit à n caractères imprimables (journal, bandeau).
+func Borne(m string, n int) string {
+	var b strings.Builder
+	for _, r := range m {
+		if b.Len() >= n {
+			b.WriteString("…")
+			break
+		}
+		if r < 0x20 || r == 0x7f {
+			r = ' '
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
 // Config du client.
 type Config struct {
 	Issuer, ClientID, ClientSecret string
@@ -75,6 +152,7 @@ type Client struct {
 	mu        sync.Mutex
 	provider  *gooidc.Provider
 	fetchedAt time.Time
+	vol       *lecture // Discovery en cours de lecture (une seule à la fois)
 
 	machineMu  sync.Mutex
 	machineTok string
@@ -90,19 +168,54 @@ func (c *Client) ctx(ctx context.Context) context.Context {
 	return gooidc.ClientContext(ctx, c.cfg.HTTPClient)
 }
 
+type lecture struct {
+	fini chan struct{}
+	p    *gooidc.Provider
+	err  error
+}
+
 // discovery : Discovery en cache (1 h) ; go-oidc refuse un `issuer` différent de celui configuré.
+// Le verrou n'est jamais tenu pendant l'appel réseau : une seule lecture en vol, les appelants
+// concurrents en attendent le résultat. Si IRUNDO ne répond pas et qu'une Discovery périmée est en
+// cache, elle est réutilisée (stale-if-error) et relue au plus tôt une minute plus tard.
 func (c *Client) discovery(ctx context.Context) (*gooidc.Provider, error) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	if c.provider != nil && c.Now().Sub(c.fetchedAt) < DiscoveryTTL {
-		return c.provider, nil
+		p := c.provider
+		c.mu.Unlock()
+		return p, nil
 	}
-	p, err := gooidc.NewProvider(c.ctx(ctx), c.cfg.Issuer)
-	if err != nil {
-		return nil, fmt.Errorf("discovery : %w", err)
+	if v := c.vol; v != nil {
+		c.mu.Unlock()
+		select {
+		case <-v.fini:
+			return v.p, v.err
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
 	}
-	c.provider, c.fetchedAt = p, c.Now()
-	return p, nil
+	v := &lecture{fini: make(chan struct{})}
+	c.vol = v
+	c.mu.Unlock()
+
+	// Détaché de l'annulation de l'appelant : d'autres attendent ce résultat (délai : client HTTP).
+	p, err := gooidc.NewProvider(c.ctx(context.WithoutCancel(ctx)), c.cfg.Issuer)
+
+	c.mu.Lock()
+	switch {
+	case err == nil:
+		c.provider, c.fetchedAt = p, c.Now()
+		v.p = p
+	case c.provider != nil:
+		v.p = c.provider
+		c.fetchedAt = c.Now().Add(-DiscoveryTTL + time.Minute)
+	default:
+		v.err = fmt.Errorf("discovery : %s", Borne(err.Error(), 200))
+	}
+	c.vol = nil
+	c.mu.Unlock()
+	close(v.fini)
+	return v.p, v.err
 }
 
 func (c *Client) oauth(p *gooidc.Provider, scopes []string) *oauth2.Config {
@@ -184,7 +297,7 @@ func (c *Client) Exchange(ctx context.Context, code string, t Tentative) (*UserT
 	}
 	tok, err := c.oauth(p, UserScopes()).Exchange(c.ctx(ctx), code, oauth2.VerifierOption(t.Verifier))
 	if err != nil {
-		return nil, fmt.Errorf("échange du code : %w", err)
+		return nil, fmt.Errorf("échange du code : %w", tokenErr("échange du code", err))
 	}
 	raw, _ := tok.Extra("id_token").(string)
 	if raw == "" {
@@ -246,29 +359,27 @@ func checkTyp(raw string) error {
 }
 
 // MachineToken : jeton `client_credentials` réutilisé jusqu'à exp − 30 s (fournisseur-oidc.md § 2.2).
-// Tout ou rien : `invalid_scope` ⇒ ErrMachineScope.
-func (c *Client) MachineToken(ctx context.Context) (string, error) {
+// fresh : le jeton vient d'être délivré (pas du cache) — un 401 sur un jeton neuf ne se rejoue pas
+// (§ 11.5). Tout ou rien : `invalid_scope` ⇒ ErrMachineScope ; `invalid_client` ⇒ ErrInvalidClient ;
+// autre refus ⇒ *ErrTokenEndpoint (statut + code assaini, jamais le corps).
+func (c *Client) MachineToken(ctx context.Context) (tok string, fresh bool, err error) {
 	c.machineMu.Lock()
 	defer c.machineMu.Unlock()
 	if c.machineTok != "" && c.Now().Before(c.machineExp.Add(-Marge)) {
-		return c.machineTok, nil
+		return c.machineTok, false, nil
 	}
 	p, err := c.discovery(ctx)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	cc := &clientcredentials.Config{ClientID: c.cfg.ClientID, ClientSecret: c.cfg.ClientSecret,
 		TokenURL: p.Endpoint().TokenURL, Scopes: APIScopes, AuthStyle: oauth2.AuthStyleInHeader}
-	tok, err := cc.Token(c.ctx(ctx))
+	t, err := cc.Token(c.ctx(ctx))
 	if err != nil {
-		var re *oauth2.RetrieveError
-		if errors.As(err, &re) && re.ErrorCode == "invalid_scope" {
-			return "", ErrMachineScope
-		}
-		return "", fmt.Errorf("jeton machine : %w", err)
+		return "", false, tokenErr("jeton machine", err)
 	}
-	c.machineTok, c.machineExp = tok.AccessToken, tok.Expiry
-	return tok.AccessToken, nil
+	c.machineTok, c.machineExp = t.AccessToken, t.Expiry
+	return t.AccessToken, true, nil
 }
 
 // ForgetMachineToken : après un 401 de l'API, le jeton machine se redemande au passage suivant.
@@ -280,12 +391,14 @@ func (c *Client) ForgetMachineToken() {
 
 // TokenErrorStatus : statut HTTP d'une erreur du token_endpoint (0 si inconnu), pour la relève.
 func TokenErrorStatus(err error) int {
-	var re *oauth2.RetrieveError
-	if errors.As(err, &re) && re.Response != nil {
-		return re.Response.StatusCode
-	}
-	if errors.Is(err, ErrMachineScope) {
+	var te *ErrTokenEndpoint
+	switch {
+	case errors.As(err, &te):
+		return te.Status
+	case errors.Is(err, ErrMachineScope):
 		return http.StatusBadRequest
+	case errors.Is(err, ErrInvalidClient):
+		return http.StatusUnauthorized
 	}
 	return 0
 }

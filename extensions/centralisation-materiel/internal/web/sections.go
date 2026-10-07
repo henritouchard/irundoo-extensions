@@ -22,6 +22,9 @@ var familles = []struct{ cle, titre string }{
 	{"pve", "Proxmox"},
 }
 
+// TitreHote : section Redfish d'un hôte de virtualisation (redfish.scope = hypervisor-host).
+const TitreHote = "Matériel de l'hôte de virtualisation (partagé, Redfish) — non attribué à l'établissement"
+
 // sections rend la charge en tableaux, de façon tolérante : objet ⇒ clé / valeur, liste d'objets ⇒
 // tableau à colonnes. Aucune valeur n'est interprétée ici (l'état est calculé par internal/etat).
 func sections(payload []byte) []Section {
@@ -34,7 +37,12 @@ func sections(payload []byte) []Section {
 	for _, f := range familles {
 		vu[f.cle] = true
 		if v, ok := p[f.cle]; ok {
-			out = append(out, rendre(f.titre, v)...)
+			titre := f.titre
+			if rf, ok := v.(map[string]any); ok && f.cle == "redfish" && rf["scope"] == "hypervisor-host" {
+				// La carte est celle de l'hôte Proxmox, partagée : pas le matériel de l'établissement.
+				titre = TitreHote
+			}
+			out = append(out, rendre(titre, v)...)
 		}
 	}
 	var autres []string

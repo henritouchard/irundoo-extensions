@@ -70,14 +70,16 @@ func run(ctx context.Context, getenv func(string) string, logOut io.Writer, read
 	runner := &releve.Runner{Tokens: oc, API: api, Store: st, Log: log.With("composant", "releve"),
 		Interval: cfg.PollInterval, StaleAfter: cfg.StaleAfter, Retention: cfg.RetentionDays}
 	srv := &web.Server{OIDC: oc, API: api, Store: st, Log: log.With("composant", "web"), StaleAfter: cfg.StaleAfter,
-		RetentionDays: cfg.RetentionDays, SecureCookies: !cfg.InsecureDev, Version: version}
+		RetentionDays: cfg.RetentionDays, SecureCookies: cfg.SecureCookies, PublicURL: cfg.PublicURL, Version: version}
 
 	ln, err := net.Listen("tcp", cfg.Listen)
 	if err != nil {
 		return fmt.Errorf("LISTEN %s : %w", cfg.Listen, err)
 	}
+	// WriteTimeout au-delà du délai d'un rendu (web.DelaiRequete : deux appels d'API de 15 s au plus,
+	// ou Discovery + jeton + JWKS au retour d'autorisation) : la réponse d'erreur part toujours.
 	hs := &http.Server{Handler: srv.Handler(), ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second,
-		WriteTimeout: 30 * time.Second, IdleTimeout: 120 * time.Second, ErrorLog: slog.NewLogLogger(log.Handler(), slog.LevelWarn)}
+		WriteTimeout: web.DelaiRequete + 5*time.Second, IdleTimeout: 120 * time.Second, ErrorLog: slog.NewLogLogger(log.Handler(), slog.LevelWarn)}
 	log.Info("démarrage", "version", version, "listen", ln.Addr().String(), "public_url", cfg.PublicURL,
 		"issuer", cfg.Issuer, "client_id", cfg.ClientID, "poll_interval", cfg.PollInterval.String(),
 		"stale_after", cfg.StaleAfter.String(), "data", st.Path())

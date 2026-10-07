@@ -2,8 +2,10 @@ package store
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -191,5 +193,105 @@ func TestSessionsEtTentatives(t *testing.T) {
 	s.Now = func() time.Time { return now.Add(6*time.Minute + SessionIdle + time.Minute) }
 	if got, _ := s.GetSession(ctx, "s2"); got != nil {
 		t.Fatal("session inactive acceptée")
+	}
+}
+
+// Horodatages à largeur fixe : l'ordre lexical est l'ordre chronologique, y compris entre une
+// seconde ronde (« …05Z » en RFC3339Nano) et la même seconde plus 100 ms (« …05.1Z »).
+func TestTriHorodatagesLargeurFixe(t *testing.T) {
+	s, _ := open(t)
+	ctx := context.Background()
+	t0 := time.Date(2026, 10, 7, 10, 0, 5, 0, time.UTC)
+	for i, d := range []time.Duration{100 * time.Millisecond, 0, 2 * time.Second} {
+		if _, err := s.Insert(ctx, Measure{InstanceID: "a", ExtensionKey: "k", MessageID: string(rune('a' + i)), Kind: "hardware/v1",
+			CollectedAt: t0.Add(d), ReceivedAt: t0.Add(d), Payload: []byte(`{}`), Etat: "sain"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h, err := s.History(ctx, "a", t0)
+	if err != nil || h.Count != 3 || !h.First.Equal(t0) || !h.Last.Equal(t0.Add(2*time.Second)) {
+		t.Fatalf("%+v %v", h, err)
+	}
+	var v string
+	_ = s.r.QueryRow(`SELECT received_at FROM measurements WHERE message_id = 'b'`).Scan(&v)
+	if v != "2026-10-07T10:00:05.000000000Z" {
+		t.Fatal(v)
+	}
+}
+
+// Migration 0002 : les valeurs écrites par la 0.1.0 (RFC3339Nano, zéros finaux retirés) sont
+// réécrites en largeur fixe.
+func TestMigrationHorodatages(t *testing.T) {
+	s, dir := open(t)
+	ctx := context.Background()
+	if _, err := s.w.Exec(`PRAGMA user_version = 1`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.w.Exec(`INSERT INTO releves (started_at, finished_at, status, instances_count, measurements_inserted)
+		VALUES ('2026-10-07T10:00:05Z', '2026-10-07T10:00:05.1Z', 'ok', 0, 0)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.w.Exec(`INSERT INTO attempts (id, state, nonce, verifier, prompt_none, relance, created_at)
+		VALUES ('x', 's', 'n', 'v', 0, 0, 'illisible')`); err != nil {
+		t.Fatal(err)
+	}
+	_ = s.Close()
+	s2, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s2.Close()
+	var a, b, c string
+	_ = s2.r.QueryRow(`SELECT started_at, finished_at FROM releves`).Scan(&a, &b)
+	_ = s2.r.QueryRow(`SELECT created_at FROM attempts`).Scan(&c)
+	if a != "2026-10-07T10:00:05.000000000Z" || b != "2026-10-07T10:00:05.100000000Z" || c != "illisible" {
+		t.Fatal(a, b, c)
+	}
+	if err := s2.Healthy(ctx); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Les tentatives OIDC (créées sans authentification) sont plafonnées ; les expirées sont purgées
+// à l'insertion.
+func TestPlafondTentatives(t *testing.T) {
+	s, _ := open(t)
+	ctx := context.Background()
+	t0 := time.Now()
+	s.Now = func() time.Time { return t0 }
+	tx, _ := s.w.Begin()
+	for i := 0; i < DefaultMaxAttempts; i++ {
+		if _, err := tx.Exec(`INSERT INTO attempts (id, state, nonce, verifier, prompt_none, relance, created_at) VALUES (?, 's', 'n', 'v', 0, 0, ?)`,
+			"t"+strconv.Itoa(i), fmtT(t0)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_ = tx.Commit()
+	if err := s.CreateAttempt(ctx, Attempt{ID: "neuve", State: "s"}); !errors.Is(err, ErrTropDeTentatives) {
+		t.Fatal(err)
+	}
+	s.Now = func() time.Time { return t0.Add(AttemptTTL + time.Second) }
+	if err := s.CreateAttempt(ctx, Attempt{ID: "neuve", State: "s"}); err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	_ = s.r.QueryRow(`SELECT count(*) FROM attempts`).Scan(&n)
+	if n != 1 {
+		t.Fatal(n)
+	}
+}
+
+func TestEnregistrerPassage(t *testing.T) {
+	s, _ := open(t)
+	ctx := context.Background()
+	m := Measure{InstanceID: "a", ExtensionKey: "k", MessageID: "m1", Kind: "hardware/v1", CollectedAt: time.Now(), ReceivedAt: time.Now(), Payload: []byte(`{}`), Etat: "sain"}
+	m2 := m
+	m2.MessageID = "m2"
+	n, err := s.EnregistrerPassage(ctx, []Instance{{ID: "a", Name: "A", Active: true}}, []Measure{m, m2, m})
+	if err != nil || n != 2 {
+		t.Fatal(n, err)
+	}
+	if n, _ := s.EnregistrerPassage(ctx, nil, []Measure{m, m2}); n != 0 {
+		t.Fatal("rejeu inséré", n)
 	}
 }

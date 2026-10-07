@@ -6,6 +6,9 @@ package fakeirundo
 
 import (
 	"crypto"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
@@ -76,6 +79,13 @@ type Server struct {
 	OmitIss bool
 	// TokenTTL : durée de vie des access tokens émis (900 s par défaut).
 	TokenTTL time.Duration
+	// IDTokenForge : si non nil, produit l'id_token à partir des claims nominales (tests de refus :
+	// aud, exp, autre clé, alg). Appelé sous Mu : ne pas reverrouiller.
+	IDTokenForge func(claims map[string]any) string
+	// ECKey / PublishEC : une clé EC P-256 publiée dans le JWKS et ES256 annoncé dans la Discovery
+	// (un client qui n'épingle pas RS256 accepterait un id_token ES256).
+	ECKey     *ecdsa.PrivateKey
+	PublishEC bool
 
 	// Données servies.
 	Instances     []map[string]any
@@ -102,8 +112,12 @@ func New() *Server {
 	if err != nil {
 		panic(err)
 	}
+	ec, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		panic(err)
+	}
 	s := &Server{
-		Key: key, Kid: "2026-10-01",
+		Key: key, Kid: "2026-10-01", ECKey: ec,
 		ClientID:     "0123456789abcdef0123456789abcdef",
 		ClientSecret: strings.Repeat("ab", 32),
 		UserSub:      "42", UserName: "Ada Lovelace", UserRoles: []string{"admin"},
@@ -141,6 +155,13 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 }
 
 func (s *Server) discovery(w http.ResponseWriter, _ *http.Request) {
+	s.Mu.Lock()
+	s.Calls["discovery"]++
+	algs := []string{"RS256"}
+	if s.PublishEC {
+		algs = append(algs, "ES256")
+	}
+	s.Mu.Unlock()
 	iss := s.Issuer()
 	writeJSON(w, 200, map[string]any{
 		"issuer":                                         iss,
@@ -151,7 +172,7 @@ func (s *Server) discovery(w http.ResponseWriter, _ *http.Request) {
 		"response_modes_supported":                       []string{"query"},
 		"grant_types_supported":                          []string{"authorization_code", "client_credentials"},
 		"subject_types_supported":                        []string{"public"},
-		"id_token_signing_alg_values_supported":          []string{"RS256"},
+		"id_token_signing_alg_values_supported":          algs,
 		"scopes_supported":                               []string{"openid", "irundoo:perimeter:read", "irundoo:instances:read", "irundoo:objects:read", "irundoo:objects:write", "irundoo:users:read", "irundoo:users:write", "irundoo:hardware:read"},
 		"token_endpoint_auth_methods_supported":          []string{"client_secret_basic", "client_secret_post"},
 		"code_challenge_methods_supported":               []string{"S256"},
@@ -164,11 +185,47 @@ func (s *Server) discovery(w http.ResponseWriter, _ *http.Request) {
 func b64(b []byte) string { return base64.RawURLEncoding.EncodeToString(b) }
 
 func (s *Server) jwks(w http.ResponseWriter, _ *http.Request) {
+	s.Mu.Lock()
+	defer s.Mu.Unlock()
 	pub := s.Key.PublicKey
-	writeJSON(w, 200, map[string]any{"keys": []map[string]string{{
+	keys := []map[string]string{{
 		"kty": "RSA", "use": "sig", "alg": "RS256", "kid": s.Kid,
 		"n": b64(pub.N.Bytes()), "e": b64(big.NewInt(int64(pub.E)).Bytes()),
-	}}})
+	}}
+	if s.PublishEC {
+		keys = append(keys, map[string]string{"kty": "EC", "use": "sig", "alg": "ES256", "kid": "ec-1", "crv": "P-256",
+			"x": b64(s.ECKey.X.FillBytes(make([]byte, 32))), "y": b64(s.ECKey.Y.FillBytes(make([]byte, 32)))})
+	}
+	writeJSON(w, 200, map[string]any{"keys": keys})
+}
+
+// SignWith produit un JWT de type JWT avec l'algorithme et la clé donnés : RS256 (*rsa.PrivateKey),
+// ES256 (*ecdsa.PrivateKey), HS256 ([]byte), none (clé ignorée, signature vide).
+func SignWith(alg string, key any, kid string, claims map[string]any) string {
+	h, _ := json.Marshal(map[string]string{"typ": "JWT", "alg": alg, "kid": kid})
+	p, _ := json.Marshal(claims)
+	in := b64(h) + "." + b64(p)
+	sum := sha256.Sum256([]byte(in))
+	switch alg {
+	case "RS256":
+		sig, err := rsa.SignPKCS1v15(rand.Reader, key.(*rsa.PrivateKey), crypto.SHA256, sum[:])
+		if err != nil {
+			panic(err)
+		}
+		return in + "." + b64(sig)
+	case "ES256":
+		r, ss, err := ecdsa.Sign(rand.Reader, key.(*ecdsa.PrivateKey), sum[:])
+		if err != nil {
+			panic(err)
+		}
+		return in + "." + b64(append(r.FillBytes(make([]byte, 32)), ss.FillBytes(make([]byte, 32))...))
+	case "HS256":
+		m := hmac.New(sha256.New, key.([]byte))
+		m.Write([]byte(in))
+		return in + "." + b64(m.Sum(nil))
+	default:
+		return in + "."
+	}
 }
 
 // Sign produit un JWT RS256.
@@ -322,9 +379,13 @@ func (s *Server) token(w http.ResponseWriter, r *http.Request) {
 			nonce = s.IDTokenNonceOverride
 		}
 		now := time.Now()
-		idt := s.Sign("JWT", map[string]any{"iss": s.Issuer(), "sub": s.UserSub, "aud": s.ClientID,
+		claims := map[string]any{"iss": s.Issuer(), "sub": s.UserSub, "aud": s.ClientID,
 			"exp": now.Add(300 * time.Second).Unix(), "iat": now.Unix(), "jti": randHex(16),
-			"nonce": nonce, "name": s.UserName, "roles": s.UserRoles})
+			"nonce": nonce, "name": s.UserName, "roles": s.UserRoles}
+		idt := s.Sign("JWT", claims)
+		if s.IDTokenForge != nil {
+			idt = s.IDTokenForge(claims)
+		}
 		writeJSON(w, 200, map[string]any{"access_token": at, "token_type": "Bearer",
 			"expires_in": int(s.TokenTTL.Seconds()), "id_token": idt, "scope": c.scope})
 	default:

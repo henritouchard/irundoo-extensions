@@ -3,8 +3,11 @@ package irundoo_test
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -159,5 +162,35 @@ func TestDatesTolerantes(t *testing.T) {
 	hw, err := c.Hardware(context.Background(), tok, "")
 	if err != nil || !hw.Reduced || hw.Hardware[0].ExtensionVersion != nil || hw.Hardware[0].CollectedAt.Unix() != time.Date(2026, 10, 7, 10, 0, 0, 0, time.UTC).Unix() {
 		t.Fatalf("dates : %+v %v", hw, err)
+	}
+}
+
+// Une redirection de l'API n'est jamais suivie : le jeton ne part pas vers une autre adresse.
+func TestRedirectionNonSuivie(t *testing.T) {
+	var recu atomic.Int32
+	ailleurs := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		recu.Add(1)
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte(`{"instances":[],"reduced":false}`))
+	}))
+	defer ailleurs.Close()
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, ailleurs.URL+r.URL.Path, http.StatusFound)
+	}))
+	defer api.Close()
+	c, err := irundoo.New(api.URL, irundoo.NewHTTPClient(), "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = c.Instances(context.Background(), "jeton")
+	var ue *irundoo.ErrUnexpected
+	if !errors.As(err, &ue) || ue.Status != http.StatusFound {
+		t.Fatalf("%v", err)
+	}
+	if _, err := c.Hardware(context.Background(), "jeton", ""); !errors.As(err, &ue) || ue.Status != http.StatusFound {
+		t.Fatalf("%v", err)
+	}
+	if recu.Load() != 0 {
+		t.Fatal("redirection suivie : le jeton est parti ailleurs")
 	}
 }

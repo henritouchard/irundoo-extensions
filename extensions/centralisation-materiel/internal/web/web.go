@@ -8,17 +8,23 @@ package web
 
 import (
 	"context"
+	"crypto/sha256"
+	"crypto/subtle"
 	"embed"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"html/template"
 	"io/fs"
 	"log/slog"
+	"net"
 	"net/http"
 	"slices"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/henritouchard/irundoo-extensions/extensions/centralisation-materiel/internal/etat"
@@ -33,11 +39,16 @@ var templatesFS embed.FS
 //go:embed static
 var staticFS embed.FS
 
-// Cookies.
+// Cookies. En https, le cookie de session prend le préfixe `__Host-` (Secure, Path=/, sans Domain :
+// aucun sous-domaine ne peut le poser) et les cookies de tentative `__Secure-`.
 const (
-	CookieSession   = "cm_session"
-	CookieTentative = "cm_tentative"
+	CookieSession          = "cm_session"
+	CookieTentativePrefixe = "cm_t_"
 )
+
+// DelaiRequete : délai d'un rendu (deux appels d'API de 15 s au plus, ou Discovery + jeton + JWKS
+// au retour d'autorisation). WriteTimeout du serveur HTTP doit le dépasser.
+const DelaiRequete = 40 * time.Second
 
 // FenetreRenouvellement : un 401 de l'API sur une session plus jeune que ce délai est un second
 // échec consécutif (ré-autorisation qui vient de réussir) : page d'erreur, jamais de boucle.
@@ -58,10 +69,17 @@ type Server struct {
 	StaleAfter    time.Duration
 	RetentionDays int
 	SecureCookies bool
-	Version       string
-	Now           func() time.Time
+	// PublicURL : origine admise pour les POST (en-tête Origin) ; vide ⇒ non vérifiée.
+	PublicURL string
+	Version   string
+	Now       func() time.Time
+	// TentativesParMinute / TentativesRafale : limite de débit des tentatives de connexion par
+	// adresse (0 ⇒ 10 par minute, rafale de 20).
+	TentativesParMinute, TentativesRafale int
 
-	tmpl *template.Template
+	tmpl    *template.Template
+	limiteM sync.Mutex
+	seaux   map[string]*seau
 }
 
 func (s *Server) now() time.Time {
@@ -91,13 +109,13 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /etablissements/{id}", s.detail)
 	mux.HandleFunc("GET /oidc/login", s.login)
 	mux.HandleFunc("GET /oidc/callback", s.callback)
-	mux.HandleFunc("GET /logout", s.logout)
+	mux.HandleFunc("POST /logout", s.logout)
 	static, _ := fs.Sub(staticFS, "static")
 	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServerFS(static)))
-	return securite(mux)
+	return s.securite(mux)
 }
 
-func securite(h http.Handler) http.Handler {
+func (s *Server) securite(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hd := w.Header()
 		hd.Set("Content-Security-Policy", "default-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
@@ -105,7 +123,12 @@ func securite(h http.Handler) http.Handler {
 		hd.Set("Referrer-Policy", "no-referrer")
 		hd.Set("X-Content-Type-Options", "nosniff")
 		hd.Set("Cache-Control", "no-store")
-		h.ServeHTTP(w, r)
+		if s.SecureCookies {
+			hd.Set("Strict-Transport-Security", "max-age=31536000")
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), DelaiRequete)
+		defer cancel()
+		h.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
 
@@ -135,8 +158,34 @@ func (s *Server) cookie(name, value, path string, maxAge int) *http.Cookie {
 		Secure: s.SecureCookies, SameSite: http.SameSiteLaxMode}
 }
 
+// nomSession : `__Host-cm_session` en https, `cm_session` en développement http.
+func (s *Server) nomSession() string {
+	if s.SecureCookies {
+		return "__Host-" + CookieSession
+	}
+	return CookieSession
+}
+
+// nomTentative : un cookie par tentative, nommé d'après son `state` (deux onglets qui se
+// renouvellent en même temps ne s'écrasent pas). Le nom ne révèle pas le state.
+func (s *Server) nomTentative(state string) string {
+	h := sha256.Sum256([]byte(state))
+	n := CookieTentativePrefixe + hex.EncodeToString(h[:8])
+	if s.SecureCookies {
+		return "__Secure-" + n
+	}
+	return n
+}
+
+// csrf : jeton anti-CSRF de la session (dérivé de son identifiant, que seul le cookie HttpOnly
+// porte : un site tiers ne peut pas le calculer).
+func csrf(sessionID string) string {
+	h := sha256.Sum256([]byte("centralisation-materiel/csrf\x00" + sessionID))
+	return base64.RawURLEncoding.EncodeToString(h[:])
+}
+
 func (s *Server) session(r *http.Request) *store.Session {
-	c, err := r.Cookie(CookieSession)
+	c, err := r.Cookie(s.nomSession())
 	if err != nil || c.Value == "" {
 		return nil
 	}
@@ -165,9 +214,20 @@ func (s *Server) authentifier(w http.ResponseWriter, r *http.Request, renouvelle
 }
 
 func (s *Server) demarrer(w http.ResponseWriter, r *http.Request, promptNone, relance bool) {
+	if !s.autoriserTentative(clientIP(r)) {
+		w.Header().Set("Retry-After", "60")
+		s.erreur(w, http.StatusTooManyRequests, "Trop de tentatives de connexion", "Trop de tentatives de connexion depuis cette adresse : réessayez dans une minute.")
+		return
+	}
 	t := oidc.NouvelleTentative(promptNone)
 	id := oidc.Random()
 	if err := s.Store.CreateAttempt(r.Context(), store.Attempt{ID: id, State: t.State, Nonce: t.Nonce, Verifier: t.Verifier, PromptNone: promptNone, Relance: relance}); err != nil {
+		if errors.Is(err, store.ErrTropDeTentatives) {
+			s.Log.Warn("plafond des tentatives de connexion en vol atteint")
+			w.Header().Set("Retry-After", "60")
+			s.erreur(w, http.StatusServiceUnavailable, "Trop de connexions en cours", "Trop de tentatives de connexion sont en cours : réessayez dans quelques minutes.")
+			return
+		}
 		s.erreur(w, http.StatusInternalServerError, "Magasin local indisponible", "La tentative de connexion n'a pas pu être enregistrée.")
 		return
 	}
@@ -177,8 +237,70 @@ func (s *Server) demarrer(w http.ResponseWriter, r *http.Request, promptNone, re
 		s.erreur(w, http.StatusBadGateway, "IRUNDO injoignable", "La configuration OpenID d'IRUNDO n'a pas pu être lue.")
 		return
 	}
-	http.SetCookie(w, s.cookie(CookieTentative, id, "/oidc/", int(store.AttemptTTL.Seconds())))
+	http.SetCookie(w, s.cookie(s.nomTentative(t.State), id, "/oidc/", int(store.AttemptTTL.Seconds())))
 	http.Redirect(w, r, u, http.StatusFound)
+}
+
+// ---- limite de débit des tentatives (sans authentification) ----
+
+type seau struct {
+	jetons float64
+	vu     time.Time
+}
+
+// autoriserTentative : seau à jetons par adresse, en mémoire.
+func (s *Server) autoriserTentative(ip string) bool {
+	parMin, rafale := s.TentativesParMinute, s.TentativesRafale
+	if parMin <= 0 {
+		parMin = 10
+	}
+	if rafale <= 0 {
+		rafale = 20
+	}
+	now := s.now()
+	s.limiteM.Lock()
+	defer s.limiteM.Unlock()
+	if s.seaux == nil {
+		s.seaux = map[string]*seau{}
+	}
+	if len(s.seaux) > 10000 { // borne la mémoire : on oublie les adresses dont le seau est plein
+		for k, b := range s.seaux {
+			if now.Sub(b.vu) > time.Duration(rafale)*time.Minute/time.Duration(parMin) {
+				delete(s.seaux, k)
+			}
+		}
+	}
+	b, ok := s.seaux[ip]
+	if !ok {
+		b = &seau{jetons: float64(rafale), vu: now}
+		s.seaux[ip] = b
+	}
+	b.jetons = min(float64(rafale), b.jetons+now.Sub(b.vu).Minutes()*float64(parMin))
+	b.vu = now
+	if b.jetons < 1 {
+		return false
+	}
+	b.jetons--
+	return true
+}
+
+// clientIP : l'adresse du pair ; derrière un proxy local (pair en loopback), la dernière adresse
+// de X-Forwarded-For, celle que le proxy a vue (il l'ajoute en fin de liste). Ne sert qu'à la
+// limite de débit, jamais à une décision d'autorisation.
+func clientIP(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+		if xff := r.Header.Values("X-Forwarded-For"); len(xff) > 0 {
+			parts := strings.Split(xff[len(xff)-1], ",")
+			if fwd := net.ParseIP(strings.TrimSpace(parts[len(parts)-1])); fwd != nil {
+				return fwd.String()
+			}
+		}
+	}
+	return host
 }
 
 func (s *Server) login(w http.ResponseWriter, r *http.Request) {
@@ -186,8 +308,11 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) callback(w http.ResponseWriter, r *http.Request) {
-	c, err := r.Cookie(CookieTentative)
-	http.SetCookie(w, s.cookie(CookieTentative, "", "/oidc/", -1))
+	nom := s.nomTentative(r.URL.Query().Get("state"))
+	c, err := r.Cookie(nom)
+	if err == nil {
+		http.SetCookie(w, s.cookie(nom, "", "/oidc/", -1))
+	}
 	var a *store.Attempt
 	if err == nil {
 		a, err = s.Store.TakeAttempt(r.Context(), c.Value)
@@ -231,16 +356,32 @@ func (s *Server) callback(w http.ResponseWriter, r *http.Request) {
 		s.erreur(w, http.StatusInternalServerError, "Magasin local indisponible", "La session n'a pas pu être enregistrée.")
 		return
 	}
+	// La session remplacée (renouvellement) n'est effacée qu'ici, une fois la nouvelle ouverte :
+	// un autre onglet qui la porte encore n'est pas déconnecté pendant le renouvellement.
+	if old, err := r.Cookie(s.nomSession()); err == nil && old.Value != "" {
+		_ = s.Store.DeleteSession(r.Context(), old.Value)
+	}
 	s.Log.Info("session ouverte", "sub", ut.Sub)
-	http.SetCookie(w, s.cookie(CookieSession, se.ID, "/", 0))
+	http.SetCookie(w, s.cookie(s.nomSession(), se.ID, "/", 0))
 	http.Redirect(w, r, "/", http.StatusFound)
 }
 
+// logout : POST seulement, avec le jeton anti-CSRF de la session et, si le navigateur l'envoie, une
+// origine égale à PUBLIC_URL.
 func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
-	if c, err := r.Cookie(CookieSession); err == nil {
+	if o := r.Header.Get("Origin"); o != "" && s.PublicURL != "" && o != s.PublicURL {
+		s.erreur(w, http.StatusForbidden, "Requête refusée", "Origine de la demande de déconnexion non reconnue.")
+		return
+	}
+	c, err := r.Cookie(s.nomSession())
+	if err == nil && c.Value != "" {
+		if subtle.ConstantTimeCompare([]byte(r.PostFormValue("csrf")), []byte(csrf(c.Value))) != 1 {
+			s.erreur(w, http.StatusForbidden, "Requête refusée", "Jeton de formulaire invalide : rechargez la page puis réessayez.")
+			return
+		}
 		_ = s.Store.DeleteSession(r.Context(), c.Value)
 	}
-	http.SetCookie(w, s.cookie(CookieSession, "", "/", -1))
+	http.SetCookie(w, s.cookie(s.nomSession(), "", "/", -1))
 	s.render(w, http.StatusOK, "message", map[string]any{"Titre": "Déconnecté",
 		"Texte": "La session de cette application est fermée. Votre session IRUNDO reste ouverte : fermez-la dans IRUNDO.", "Lien": "/"})
 }
@@ -258,6 +399,7 @@ type Ligne struct {
 // Vue : données de la page et du fragment de liste.
 type Vue struct {
 	Nom      string
+	CSRF     string
 	Lignes   []Ligne
 	Reduced  bool
 	Releve   *store.ReleveState
@@ -274,9 +416,9 @@ func (s *Server) sessionValide(w http.ResponseWriter, r *http.Request) *store.Se
 	}
 	// Une session qui vient d'être ouverte n'est jamais renouvelée aussitôt (un expires_in plus court
 	// que la marge ne doit pas faire boucler) : si le jeton est vraiment échu, l'API répond 401 et
-	// refusAPI affiche l'erreur.
+	// refusAPI affiche l'erreur. La session échue n'est pas effacée ici : le retour d'autorisation
+	// la remplace (un autre onglet qui la porte n'est pas déconnecté entre-temps).
 	if s.now().Sub(se.CreatedAt) >= FenetreRenouvellement && !s.now().Before(se.TokenExp.Add(-oidc.Marge)) {
-		_ = s.Store.DeleteSession(r.Context(), se.ID)
 		s.authentifier(w, r, true)
 		return nil
 	}
@@ -290,7 +432,6 @@ func (s *Server) refusAPI(w http.ResponseWriter, r *http.Request, se *store.Sess
 	var rl *irundoo.ErrRateLimited
 	switch {
 	case errors.Is(err, irundoo.ErrInvalidToken):
-		_ = s.Store.DeleteSession(r.Context(), se.ID)
 		if s.now().Sub(se.CreatedAt) < FenetreRenouvellement {
 			s.erreur(w, http.StatusBadGateway, "Jeton refusé", "IRUNDO refuse le jeton qu'il vient de délivrer. Réessayez plus tard ; si cela persiste, l'application est peut-être révoquée.")
 			return
@@ -324,18 +465,19 @@ func (s *Server) vue(ctx context.Context, se *store.Session) (*Vue, error) {
 	derniere := map[string]*irundoo.Measure{}
 	for i := range hw.Hardware {
 		m := &hw.Hardware[i]
-		if d, ok := derniere[m.InstanceID]; !ok || m.ReceivedAt.After(d.ReceivedAt) {
+		if d, ok := derniere[m.InstanceID]; !ok || etat.PlusRecente(mesure(m), mesure(d)) {
 			derniere[m.InstanceID] = m
 		}
 	}
 	now := s.now()
-	v := &Vue{Nom: se.Name, Reduced: ins.Reduced || hw.Reduced, Stale: s.StaleAfter, Compteur: map[string]int{}}
+	v := &Vue{Nom: se.Name, CSRF: csrf(se.ID), Reduced: ins.Reduced || hw.Reduced, Stale: s.StaleAfter, Compteur: map[string]int{}}
 	// Source unique des lignes : /instances de ce rendu. Une mesure d'un id absent est ignorée.
 	for _, in := range ins.Instances {
 		l := Ligne{Instance: in, Mesure: derniere[in.Id]}
 		var em *etat.Mesure
 		if l.Mesure != nil {
-			em = &etat.Mesure{ReceivedAt: l.Mesure.ReceivedAt, Payload: l.Mesure.Payload}
+			m := mesure(l.Mesure)
+			em = &m
 		}
 		l.Res = etat.Compute(now, em, s.StaleAfter)
 		l.Resume = l.Res.Signaux[:min(3, len(l.Res.Signaux))]
@@ -355,6 +497,11 @@ func (s *Server) vue(ctx context.Context, se *store.Session) (*Vue, error) {
 		v.Releve = &store.ReleveState{}
 	}
 	return v, nil
+}
+
+// mesure : ce dont internal/etat a besoin d'une entrée de /hardware.
+func mesure(m *irundoo.Measure) etat.Mesure {
+	return etat.Mesure{CollectedAt: m.CollectedAt, ReceivedAt: m.ReceivedAt, Payload: m.Payload}
 }
 
 func (s *Server) page(w http.ResponseWriter, r *http.Request) {
@@ -423,13 +570,14 @@ func (s *Server) detail(w http.ResponseWriter, r *http.Request) {
 	d := Detail{Ligne: Ligne{Instance: ins.Instances[i]}, Retention: s.RetentionDays}
 	for k := range hw.Hardware {
 		m := &hw.Hardware[k]
-		if m.InstanceID == id && (d.Mesure == nil || m.ReceivedAt.After(d.Mesure.ReceivedAt)) {
+		if m.InstanceID == id && (d.Mesure == nil || etat.PlusRecente(mesure(m), mesure(d.Mesure))) {
 			d.Mesure = m
 		}
 	}
 	var em *etat.Mesure
 	if d.Mesure != nil {
-		em = &etat.Mesure{ReceivedAt: d.Mesure.ReceivedAt, Payload: d.Mesure.Payload}
+		m := mesure(d.Mesure)
+		em = &m
 		d.Sections = sections(d.Mesure.Payload)
 	}
 	d.Res = etat.Compute(s.now(), em, s.StaleAfter)

@@ -1,0 +1,13 @@
+# Contexte de construction (deploy/Dockerfile) : ni secrets, ni données locales, ni binaires.
+.git
+bin/
+tmp/
+dev/env
+*.sqlite
+*.sqlite-*
+client_secret
+**/client_secret*
+*.pem
+*.key
+.env
+**/.env

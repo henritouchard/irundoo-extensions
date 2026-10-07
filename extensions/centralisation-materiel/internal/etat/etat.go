@@ -58,8 +58,29 @@ type Signal struct {
 
 // Mesure : ce dont le calcul a besoin d'une entrée de /hardware.
 type Mesure struct {
-	ReceivedAt time.Time
-	Payload    []byte
+	CollectedAt time.Time // horloge de l'établissement (zéro si inconnue)
+	ReceivedAt  time.Time // horloge d'IRUNDO
+	Payload     []byte
+}
+
+// Reference : least(collected_at, received_at), la date de collecte plafonnée à la réception —
+// la sémantique « dernière » du serveur (contrat § 6). Une horloge d'établissement en avance ne
+// rajeunit pas une mesure ; un vieux lot relayé tard n'a pas l'air frais.
+func Reference(m Mesure) time.Time {
+	if !m.CollectedAt.IsZero() && m.CollectedAt.Before(m.ReceivedAt) {
+		return m.CollectedAt
+	}
+	return m.ReceivedAt
+}
+
+// Plus recente : a est-elle plus récente que b selon l'ordre du serveur (least(collected_at,
+// received_at) desc, puis received_at desc) ?
+func PlusRecente(a, b Mesure) bool {
+	ra, rb := Reference(a), Reference(b)
+	if !ra.Equal(rb) {
+		return ra.After(rb)
+	}
+	return a.ReceivedAt.After(b.ReceivedAt)
 }
 
 // Resultat du calcul pour une ligne.
@@ -70,6 +91,14 @@ type Resultat struct {
 	Ignores  int
 	Mentions []string
 	Profil   string
+	// Reference : least(collected_at, received_at), base de la fraîcheur et de l'âge affiché.
+	Reference time.Time
+	// Silencieux : la dernière mesure, critique, est trop ancienne. La ligne reste comptée
+	// « critique » (un critique n'est jamais masqué par le silence) et l'écrit.
+	Silencieux bool
+	// SignauxHote : signaux de la carte Redfish d'un hôte de virtualisation (redfish.scope =
+	// hypervisor-host), partagée par plusieurs établissements : ils ne font pas l'état de la ligne.
+	SignauxHote []Signal
 	// DemarreLe : received_at − os.uptime_s (origine des compteurs remis à zéro), si connu.
 	DemarreLe *time.Time
 	BootID    string
@@ -88,20 +117,35 @@ const (
 	FenetreSEL          = 7 * 24 * time.Hour
 )
 
+// MentionHote préfixe ce qui vient de la carte d'un hôte de virtualisation.
+const MentionHote = "matériel de l'hôte de virtualisation (partagé)"
+
 // Compute : état d'une ligne. m == nil : aucune entrée /hardware pour l'établissement.
-// La fraîcheur se juge sur received_at (horloge d'IRUNDO), jamais collected_at.
+// La fraîcheur se juge sur Reference (least(collected_at, received_at)).
 func Compute(now time.Time, m *Mesure, staleAfter time.Duration) Resultat {
 	if m == nil {
 		return Resultat{Etat: PasDeNouvelle, Motif: "aucune mesure reçue"}
 	}
 	p := map[string]any{}
-	r := Resultat{}
+	r := Resultat{Reference: Reference(*m)}
 	if err := json.Unmarshal(m.Payload, &p); err != nil || p == nil {
 		p = map[string]any{}
 		r.Ignores++
 	}
 	sig, ign := Signaux(p, now)
-	r.Signaux, r.Ignores = sig, r.Ignores+ign
+	r.Ignores += ign
+	hote := false
+	if rf, ok := p["redfish"].(map[string]any); ok {
+		sc, _ := str(rf["scope"])
+		hote = sc == "hypervisor-host"
+	}
+	for _, s := range sig {
+		if hote && strings.HasPrefix(s.Cle, "redfish.") {
+			r.SignauxHote = append(r.SignauxHote, s)
+		} else {
+			r.Signaux = append(r.Signaux, s)
+		}
+	}
 	r.Profil, _ = str(get(p, "host", "profile"))
 	if up, ok := num(get(p, "os", "uptime_s")); ok && up >= 0 {
 		t := m.ReceivedAt.Add(-time.Duration(up) * time.Second)
@@ -109,36 +153,67 @@ func Compute(now time.Time, m *Mesure, staleAfter time.Duration) Resultat {
 	}
 	r.BootID, _ = str(get(p, "os", "boot_id"))
 
-	if now.Sub(m.ReceivedAt) > staleAfter {
-		r.Etat = PasDeNouvelle
-		r.Motif = "dernière mesure reçue il y a " + duree(now.Sub(m.ReceivedAt))
-		return r
-	}
 	sources, sourcesOK := p["sources"].(map[string]any)
 	if !sourcesOK {
 		r.Mentions = append(r.Mentions, "sources non renseignées")
 	}
-	for _, s := range r.Signaux {
+	// Une source tentée qui n'a rien rendu (unauthorized, absent, timeout, error, unreachable, tls…)
+	// se dit sur la ligne : un « sain » lu sans la carte de gestion n'est pas le même « sain ».
+	for _, k := range triees(sources) {
+		if v, ok := str(sources[k]); ok && v != "ok" && v != "partial" {
+			r.Mentions = append(r.Mentions, "source "+k+" : "+v)
+		}
+	}
+	attentionHote := 0
+	for _, s := range r.SignauxHote {
 		if s.Niveau == NiveauCritique {
-			r.Etat = Critique
+			r.Mentions = append(r.Mentions, MentionHote+" : critique — "+s.Message)
+		} else {
+			attentionHote++
+		}
+	}
+	if attentionHote > 0 {
+		r.Mentions = append(r.Mentions, fmt.Sprintf("%s : %d signal(aux) d'attention (voir le détail)", MentionHote, attentionHote))
+	}
+	critique := slices.ContainsFunc(r.Signaux, func(s Signal) bool { return s.Niveau == NiveauCritique })
+
+	if age := now.Sub(r.Reference); age > staleAfter {
+		if critique {
+			r.Etat, r.Silencieux = Critique, true
+			r.Motif = "pas de nouvelle — dernier état connu : critique (dernière mesure il y a " + duree(age) + ")"
 			return r
 		}
+		r.Etat = PasDeNouvelle
+		r.Motif = "dernière mesure il y a " + duree(age)
+		return r
+	}
+	if critique {
+		r.Etat = Critique
+		return r
 	}
 	if len(r.Signaux) > 0 {
 		r.Etat = Attention
 		return r
 	}
+	// La carte d'un hôte de virtualisation n'observe pas le matériel de l'établissement.
 	materiel := false
 	for _, k := range []string{"redfish", "pve"} {
+		if k == "redfish" && hote {
+			continue
+		}
 		if v, _ := str(sources[k]); v == "ok" || v == "partial" {
 			materiel = true
 		}
 	}
 	if r.Profil != "physical" && !materiel {
 		r.Etat = NonObserve
-		r.Motif = "matériel non observé (VM, aucune source matérielle)"
-		if r.Profil == "" {
+		switch {
+		case hote:
+			r.Motif = "matériel non observé (seule la carte de l'hôte de virtualisation, partagée, est lue)"
+		case r.Profil == "":
 			r.Motif = "matériel non observé (profil inconnu, aucune source matérielle)"
+		default:
+			r.Motif = "matériel non observé (VM, aucune source matérielle)"
 		}
 		return r
 	}
@@ -147,6 +222,15 @@ func Compute(now time.Time, m *Mesure, staleAfter time.Duration) Resultat {
 		r.Mentions = append(r.Mentions, "disques derrière contrôleur : inventaire seulement")
 	}
 	return r
+}
+
+func triees(m map[string]any) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	slices.Sort(out)
+	return out
 }
 
 func disquesSansSmart(p map[string]any) bool {

@@ -25,3 +25,5 @@ td.detail { background: #f3f5f8; }
 table.section { margin-bottom: 1rem; font-size: .9rem; }
 .message { max-width: 40rem; margin: 3rem auto; background: #fff; padding: 1.5rem; }
 .message.erreur h1 { color: var(--critique); }
+.entete form { margin: 0; }
+.entete button { background: none; border: 0; color: #cfe3ff; text-decoration: underline; cursor: pointer; font: inherit; padding: 0; }

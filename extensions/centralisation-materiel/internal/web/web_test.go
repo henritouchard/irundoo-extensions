@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -89,6 +90,7 @@ func setup(t *testing.T) *env {
 		StaleAfter: 30 * time.Minute, RetentionDays: 180, Version: "0.1.0", Now: e.now}
 	e.ts = httptest.NewServer(e.s.Handler())
 	t.Cleanup(e.ts.Close)
+	e.s.PublicURL = e.ts.URL
 	f.RedirectURIs = []string{e.ts.URL + "/oidc/callback"}
 	oc := oidc.New(oidc.Config{Issuer: f.Issuer(), ClientID: f.ClientID, ClientSecret: f.ClientSecret, RedirectURL: e.ts.URL + "/oidc/callback", HTTPClient: hc})
 	// Le client OIDC garde l'horloge réelle : les jetons du faux IRUNDO sont datés en temps réel.
@@ -202,25 +204,53 @@ func TestCookieAttributs(t *testing.T) {
 	}
 }
 
+// mdDegrade : la charge physique de D.2 avec un RAID md dégradé (critique).
+func mdDegrade(t *testing.T) []byte {
+	t.Helper()
+	b, _ := os.ReadFile("../../testdata/hardware/physical.json")
+	var p map[string]any
+	_ = json.Unmarshal(b, &p)
+	p["md"] = []any{map[string]any{"name": "md0", "degraded": true, "array_state": "clean"}}
+	return fakeirundo.MustJSON(p)
+}
+
 func TestEtatsEtBandeaux(t *testing.T) {
 	e := setup(t)
 	rf, _ := os.ReadFile("../../testdata/hardware/redfish.json")
 	e.f.Mu.Lock()
-	e.f.Hardware = append(e.f.Hardware, fakeirundo.Measure(idB, "0b8e7d6c-5f4a-4b3c-9d2e-1f0a9b8c7d6e", time.Now(), rf))
+	e.f.Instances = append(e.f.Instances, fakeirundo.Instance(idC, "Charlie", "0951234C", true))
+	e.f.Hardware = append(e.f.Hardware, fakeirundo.Measure(idB, "0b8e7d6c-5f4a-4b3c-9d2e-1f0a9b8c7d6e", time.Now(), rf),
+		fakeirundo.Measure(idC, "1c9f8e7d-6a5b-4c3d-8e2f-2a1b0c9d8e7f", time.Now(), mdDegrade(t)))
 	e.f.Reduced = true
 	e.f.Mu.Unlock()
 	t0 := time.Now()
 	_ = e.st.RecordReleve(context.Background(), store.Releve{StartedAt: t0, FinishedAt: t0, Status: "echec", HTTPStatus: 400, Motif: "scopes machine non accordés"})
 	_, body := e.get(t, "/")
 	for _, want := range []string{"Relève de fond en échec : scopes machine non accordés", "Périmètre réduit par l'administrateur",
-		`badge critique">critique`, "alimentation PS2 Status : Critical"} {
+		`badge critique">critique`, "RAID md0 dégradé", "critique : 1",
+		// Bravo : carte Redfish de l'hôte de virtualisation — son critique reste visible, en mention.
+		"matériel de l&#39;hôte de virtualisation (partagé) : critique — alimentation PS2 Status : Critical",
+		"seule la carte de l&#39;hôte de virtualisation, partagée, est lue",
+		// Alpha (VM) : les sources tentées sans résultat sont nommées sur la ligne.
+		"source redfish : absent", "source pve : absent"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("absent : %q", want)
 		}
 	}
-	// Critique (Bravo) avant non observé (Alpha).
-	if strings.Index(body, "Bravo") > strings.Index(body, "Alpha") {
+	// Critique (Charlie) avant les non observés (Alpha, Bravo).
+	if strings.Index(body, "Charlie") > strings.Index(body, "Alpha") || strings.Index(body, "Charlie") > strings.Index(body, "Bravo") {
 		t.Fatal("tri par état")
+	}
+	// Le détail de Bravo range la carte sous l'hôte, non attribuée à l'établissement.
+	_, det := e.get(t, "/etablissements/"+idB, "HX-Request", "true")
+	for _, want := range []string{"Matériel de l&#39;hôte de virtualisation (partagé, Redfish) — non attribué à l&#39;établissement",
+		"Matériel de l'hôte de virtualisation (partagé, non attribué à l'établissement)", "panne prédite"} {
+		if !strings.Contains(det, want) {
+			t.Errorf("absent du détail : %q", want)
+		}
+	}
+	if strings.Contains(det, "Carte de gestion (Redfish)") {
+		t.Error("carte de l'hôte présentée comme celle de l'établissement")
 	}
 	// La relève en échec ne rend pas les lignes « pas de nouvelle ».
 	if strings.Contains(body, "aucune mesure reçue") {
@@ -228,14 +258,31 @@ func TestEtatsEtBandeaux(t *testing.T) {
 	}
 }
 
-func TestPasDeNouvelleParReceivedAt(t *testing.T) {
+func TestPasDeNouvelleParFraicheur(t *testing.T) {
 	e := setup(t)
 	e.get(t, "/")
 	e.avance(2 * time.Minute)
 	e.s.StaleAfter = 2 * time.Minute
 	_, body := e.get(t, "/")
-	if !strings.Contains(body, "dernière mesure reçue il y a 3 min") {
+	if !strings.Contains(body, "dernière mesure il y a 3 min") || !strings.Contains(body, "collectée il y a 3 min") {
 		t.Fatal(body)
+	}
+}
+
+// Un critique devenu silencieux reste compté « critique » et le dit.
+func TestCritiqueSilencieux(t *testing.T) {
+	e := setup(t)
+	e.f.Mu.Lock()
+	e.f.Hardware = append(e.f.Hardware, fakeirundo.Measure(idB, "0b8e7d6c-5f4a-4b3c-9d2e-1f0a9b8c7d6e", time.Now().Add(-2*time.Hour), mdDegrade(t)))
+	e.f.Mu.Unlock()
+	_, body := e.get(t, "/")
+	for _, want := range []string{"pas de nouvelle — dernier état connu : critique", "critique : 1", "pas de nouvelle : 0"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("absent : %q", want)
+		}
+	}
+	if strings.Index(body, "Bravo") > strings.Index(body, "Alpha") {
+		t.Fatal("le critique silencieux n'est pas en tête")
 	}
 }
 
@@ -417,10 +464,47 @@ func TestDetail(t *testing.T) {
 	}
 }
 
+func (e *env) post(t *testing.T, path string, form url.Values, hdr ...string) (*http.Response, string) {
+	t.Helper()
+	req, _ := http.NewRequest(http.MethodPost, e.ts.URL+path, strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	for i := 0; i+1 < len(hdr); i += 2 {
+		req.Header.Set(hdr[i], hdr[i+1])
+	}
+	resp, err := e.browser.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	return resp, string(b)
+}
+
+var reCSRF = regexp.MustCompile(`name="csrf" value="([^"]+)"`)
+
 func TestDeconnexion(t *testing.T) {
 	e := setup(t)
+	_, page := e.get(t, "/")
+	m := reCSRF.FindStringSubmatch(page)
+	if m == nil {
+		t.Fatal("jeton CSRF absent de la page")
+	}
+	// GET : refusé (une image ou un lien tiers ne déconnecte pas).
+	if resp, _ := e.get(t, "/logout"); resp.StatusCode != http.StatusMethodNotAllowed {
+		t.Fatal(resp.StatusCode)
+	}
+	// POST sans jeton, ou d'une autre origine : refusé.
+	if resp, _ := e.post(t, "/logout", url.Values{}); resp.StatusCode != 403 {
+		t.Fatal(resp.StatusCode)
+	}
+	if resp, _ := e.post(t, "/logout", url.Values{"csrf": {m[1]}}, "Origin", "https://ailleurs.example.org"); resp.StatusCode != 403 {
+		t.Fatal(resp.StatusCode)
+	}
 	e.get(t, "/")
-	resp, body := e.get(t, "/logout")
+	if len(e.authorizes()) != 1 {
+		t.Fatal("session effacée par une déconnexion refusée")
+	}
+	resp, body := e.post(t, "/logout", url.Values{"csrf": {m[1]}}, "Origin", e.ts.URL)
 	if resp.StatusCode != 200 || !strings.Contains(body, "Votre session IRUNDO reste ouverte") {
 		t.Fatal(body)
 	}
@@ -444,7 +528,7 @@ func TestCallbackInvalide(t *testing.T) {
 	r2, _ := c.Get(e.ts.URL + "/oidc/callback?code=abc&state=faux&iss=" + url.QueryEscape(e.f.Issuer()))
 	b, _ := io.ReadAll(r2.Body)
 	r2.Body.Close()
-	if r2.StatusCode != 400 || !strings.Contains(string(b), "Connexion impossible") {
+	if r2.StatusCode != 400 || !strings.Contains(string(b), "Tentative de connexion inconnue") {
 		t.Fatalf("%d %s", r2.StatusCode, b)
 	}
 	if e.calls("token:authorization_code") != 0 {
@@ -527,5 +611,248 @@ func TestSections(t *testing.T) {
 	n := time.Now()
 	if depuis(n, n) != "à l'instant" || depuis(n, n.Add(-3*time.Hour)) != "il y a 3 h" || depuis(n, n.Add(-72*time.Hour)) != "il y a 3 j" {
 		t.Fatal()
+	}
+}
+
+// nofollow : client sans bocal ni redirection suivie.
+func nofollow() *http.Client {
+	return &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+}
+
+func cookieNomme(t *testing.T, resp *http.Response, prefixe string) *http.Cookie {
+	t.Helper()
+	for _, c := range resp.Cookies() {
+		if strings.HasPrefix(c.Name, prefixe) {
+			return c
+		}
+	}
+	t.Fatalf("cookie %s* absent : %v", prefixe, resp.Header.Values("Set-Cookie"))
+	return nil
+}
+
+// En https (PUBLIC_URL), le cookie de session est `__Host-cm_session` : Secure, HttpOnly,
+// SameSite=Lax, Path=/, sans Domain ; HSTS est posé.
+func TestCookieSessionAttributs(t *testing.T) {
+	e := setup(t)
+	e.s.SecureCookies = true
+	c := nofollow()
+	r1, err := c.Get(e.ts.URL + "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r1.Body.Close()
+	if !strings.HasPrefix(r1.Header.Get("Strict-Transport-Security"), "max-age=") {
+		t.Fatal("HSTS absent")
+	}
+	tc := cookieNomme(t, r1, "__Secure-cm_t_")
+	r2, err := c.Get(r1.Header.Get("Location"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r2.Body.Close()
+	req, _ := http.NewRequest(http.MethodGet, r2.Header.Get("Location"), nil)
+	req.AddCookie(&http.Cookie{Name: tc.Name, Value: tc.Value})
+	r3, err := c.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r3.Body.Close()
+	if r3.StatusCode != 302 || r3.Header.Get("Location") != "/" {
+		t.Fatalf("%d %v", r3.StatusCode, r3.Header)
+	}
+	var brut string
+	for _, v := range r3.Header.Values("Set-Cookie") {
+		if strings.HasPrefix(v, "__Host-cm_session=") {
+			brut = v
+		}
+	}
+	for _, want := range []string{"Path=/", "HttpOnly", "Secure", "SameSite=Lax"} {
+		if !strings.Contains(brut, want) {
+			t.Errorf("%q absent de %q", want, brut)
+		}
+	}
+	if strings.Contains(strings.ToLower(brut), "domain=") || strings.Contains(brut, "Max-Age") || strings.Contains(brut, "Expires") {
+		t.Errorf("attributs : %q", brut)
+	}
+	sc := cookieNomme(t, r3, "__Host-cm_session")
+	req, _ = http.NewRequest(http.MethodGet, e.ts.URL+"/", nil)
+	req.AddCookie(&http.Cookie{Name: sc.Name, Value: sc.Value})
+	r4, err := c.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r4.Body.Close()
+	if r4.StatusCode != 200 {
+		t.Fatal(r4.StatusCode)
+	}
+	// En http (développement) : pas de préfixe, pas de HSTS.
+	e.s.SecureCookies = false
+	r5, _ := c.Get(e.ts.URL + "/")
+	r5.Body.Close()
+	if r5.Header.Get("Strict-Transport-Security") != "" || cookieNomme(t, r5, "cm_t_").Secure {
+		t.Fatal("HSTS ou Secure en http")
+	}
+}
+
+// Deux onglets qui se renouvellent en même temps : chaque tentative a son cookie (nommé d'après
+// son state), aucune n'écrase l'autre.
+func TestRenouvellementsConcurrents(t *testing.T) {
+	e := setup(t)
+	jar, _ := cookiejar.New(nil)
+	b := &http.Client{Jar: jar, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	var auth []string
+	for range 2 {
+		r, err := b.Get(e.ts.URL + "/oidc/login?silent=1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		r.Body.Close()
+		auth = append(auth, r.Header.Get("Location"))
+	}
+	u, _ := url.Parse(e.ts.URL + "/oidc/")
+	if n := len(jar.Cookies(u)); n != 2 {
+		t.Fatalf("cookies de tentative : %d", n)
+	}
+	for _, i := range []int{1, 0} { // le second onglet revient le premier
+		r, err := nofollow().Get(auth[i])
+		if err != nil {
+			t.Fatal(err)
+		}
+		r.Body.Close()
+		cb, err := b.Get(r.Header.Get("Location"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		cb.Body.Close()
+		if cb.StatusCode != 302 || cb.Header.Get("Location") != "/" {
+			t.Fatalf("onglet %d : %d", i, cb.StatusCode)
+		}
+	}
+}
+
+// Le renouvellement déclenché par un onglet n'efface pas la session : un autre onglet qui la porte
+// n'est pas déconnecté ; elle n'est remplacée qu'au retour d'autorisation.
+func TestRenouvellementNeDetruitPasLaSession(t *testing.T) {
+	e := setup(t)
+	e.get(t, "/")
+	u, _ := url.Parse(e.ts.URL)
+	old := e.browser.Jar.Cookies(u)[0].Value
+	e.avance(16 * time.Minute)
+	resp, _ := e.get(t, "/partials/liste", "HX-Request", "true")
+	if resp.Header.Get("HX-Redirect") != "/oidc/login?silent=1" {
+		t.Fatal(resp.Header)
+	}
+	if se, _ := e.st.GetSession(context.Background(), old); se == nil {
+		t.Fatal("session effacée au début du renouvellement")
+	}
+	if resp, body := e.get(t, "/oidc/login?silent=1"); resp.StatusCode != 200 || !strings.Contains(body, "Alpha") {
+		t.Fatal(resp.StatusCode)
+	}
+	if se, _ := e.st.GetSession(context.Background(), old); se != nil {
+		t.Fatal("session remplacée non effacée au retour")
+	}
+}
+
+func TestLimiteDeDebitDesTentatives(t *testing.T) {
+	e := setup(t)
+	e.s.TentativesRafale = 3
+	c := nofollow()
+	codes := []int{}
+	for range 4 {
+		r, err := c.Get(e.ts.URL + "/oidc/login")
+		if err != nil {
+			t.Fatal(err)
+		}
+		r.Body.Close()
+		codes = append(codes, r.StatusCode)
+	}
+	if codes[2] != 302 || codes[3] != 429 {
+		t.Fatal(codes)
+	}
+	// Une autre adresse derrière le proxy local n'est pas limitée.
+	req, _ := http.NewRequest(http.MethodGet, e.ts.URL+"/oidc/login", nil)
+	req.Header.Set("X-Forwarded-For", "203.0.113.9")
+	r, _ := c.Do(req)
+	r.Body.Close()
+	if r.StatusCode != 302 {
+		t.Fatal(r.StatusCode)
+	}
+	// Le seau se remplit avec le temps.
+	e.avance(time.Minute)
+	r, _ = c.Get(e.ts.URL + "/oidc/login")
+	r.Body.Close()
+	if r.StatusCode != 302 {
+		t.Fatal(r.StatusCode)
+	}
+}
+
+func TestPlafondDesTentativesEnVol(t *testing.T) {
+	e := setup(t)
+	e.st.MaxAttempts = 1
+	c := nofollow()
+	r, _ := c.Get(e.ts.URL + "/oidc/login")
+	r.Body.Close()
+	r2, _ := c.Get(e.ts.URL + "/oidc/login")
+	r2.Body.Close()
+	if r.StatusCode != 302 || r2.StatusCode != 503 || r2.Header.Get("Retry-After") == "" {
+		t.Fatal(r.StatusCode, r2.StatusCode)
+	}
+}
+
+func TestClientIP(t *testing.T) {
+	cas := []struct {
+		remote, xff, want string
+	}{
+		{"203.0.113.1:5000", "198.51.100.7", "203.0.113.1"}, // pair public : X-Forwarded-For ignoré
+		{"127.0.0.1:5000", "198.51.100.7, 203.0.113.4", "203.0.113.4"},
+		{"127.0.0.1:5000", "pas une adresse", "127.0.0.1"},
+		{"[::1]:5000", "", "::1"},
+	}
+	for _, c := range cas {
+		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		r.RemoteAddr = c.remote
+		if c.xff != "" {
+			r.Header.Set("X-Forwarded-For", c.xff)
+		}
+		if got := clientIP(r); got != c.want {
+			t.Errorf("%v : %s", c, got)
+		}
+	}
+}
+
+// Le rafraîchissement htmx garde un détail ouvert (hx-preserve sur la cellule du détail) et une
+// erreur de requête htmx s'affiche (app.js, htmx:responseError).
+func TestHTMXPreserveEtErreurs(t *testing.T) {
+	e := setup(t)
+	_, body := e.get(t, "/")
+	for _, want := range []string{`id="detail-` + idA + `" hx-preserve="true"`, `id="erreur-htmx"`, `src="/static/app.js"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("absent : %q", want)
+		}
+	}
+	_, det := e.get(t, "/etablissements/"+idA, "HX-Request", "true")
+	if strings.Contains(det, "hx-preserve") {
+		t.Fatal("le détail chargé ne doit pas porter hx-preserve (htmx le remplacerait par la cellule vide)")
+	}
+	resp, js := e.get(t, "/static/app.js")
+	if resp.StatusCode != 200 || !strings.Contains(js, "htmx:responseError") || !strings.Contains(js, "htmx:sendError") {
+		t.Fatal(resp.StatusCode)
+	}
+}
+
+// Le corps d'un refus du token_endpoint à l'échange du code n'est jamais journalisé (FR21, n° 18).
+func TestEchangeRefuseSansCorpsDansLeJournal(t *testing.T) {
+	e := setup(t)
+	e.f.Mu.Lock()
+	e.f.Force["token"] = &fakeirundo.Forced{Status: 400,
+		Body: `{"error":"invalid_grant","error_description":"` + e.f.ClientSecret + ` eyJhbGciOi Bearer x"}`}
+	e.f.Mu.Unlock()
+	resp, _ := e.get(t, "/")
+	if resp.StatusCode != 502 {
+		t.Fatal(resp.StatusCode)
+	}
+	out := e.log.String()
+	if !strings.Contains(out, "invalid_grant") || strings.Contains(out, e.f.ClientSecret[:8]) {
+		t.Fatal(out)
 	}
 }

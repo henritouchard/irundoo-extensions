@@ -2,8 +2,17 @@
 #   install -m 0755 bin/centralisation-materiel /usr/local/bin/
 #   install -m 0644 deploy/centralisation-materiel.service /etc/systemd/system/
 #   install -d -m 0700 /etc/centralisation-materiel
-#   install -m 0600 /dev/null /etc/centralisation-materiel/env   # puis le remplir (README)
+#   install -m 0600 /dev/null /etc/centralisation-materiel/env            # puis le remplir (README), sans secret
+#   install -m 0600 /dev/stdin /etc/centralisation-materiel/client_secret # coller le secret, Ctrl-D
 #   systemctl daemon-reload && systemctl enable --now centralisation-materiel
+#
+# Secret : LoadCredential= le copie, lisible du seul service, dans $CREDENTIALS_DIRECTORY
+# (/run/credentials/centralisation-materiel.service/client_secret) ; le fichier source reste à root
+# en 0600 (DynamicUser n'a pas besoin de le lire). Repli (systemd < 247, sans LoadCredential) :
+# retirer les lignes LoadCredential et Environment=CLIENT_SECRET_FILE ci-dessous, et mettre
+# CLIENT_SECRET_FILE vers un fichier lisible par le service — avec DynamicUser, l'uid change :
+# préférer alors User=centralisation-materiel (utilisateur système créé à la main, propriétaire du
+# fichier 0600) à la place de DynamicUser=yes.
 [Unit]
 Description=Centralisatrice matérielle (extension IRUNDO)
 After=network-online.target
@@ -13,6 +22,8 @@ Wants=network-online.target
 Type=simple
 ExecStart=/usr/local/bin/centralisation-materiel
 EnvironmentFile=/etc/centralisation-materiel/env
+LoadCredential=client_secret:/etc/centralisation-materiel/client_secret
+Environment=CLIENT_SECRET_FILE=%d/client_secret
 DynamicUser=yes
 StateDirectory=centralisation-materiel
 StateDirectoryMode=0700
@@ -30,7 +41,15 @@ RestrictNamespaces=yes
 LockPersonality=yes
 MemoryDenyWriteExecute=yes
 SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
 CapabilityBoundingSet=
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectKernelLogs=yes
+ProtectProc=invisible
 Restart=on-failure
 RestartSec=5
 

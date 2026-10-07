@@ -2,12 +2,15 @@ package oidc
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
 	"encoding/base64"
 	"errors"
 	"net/http"
 	"net/url"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -188,17 +191,121 @@ func TestIssuerDifferent(t *testing.T) {
 
 func TestDiscoveryEnCache(t *testing.T) {
 	f, c := setup(t)
-	if _, err := c.AuthURL(context.Background(), NouvelleTentative(false)); err != nil {
+	ctx := context.Background()
+	if _, err := c.AuthURL(ctx, NouvelleTentative(false)); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := c.AuthURL(ctx, NouvelleTentative(false)); err != nil {
+		t.Fatal(err)
+	}
+	if n := discoveries(f); n != 1 {
+		t.Fatalf("Discovery relue : %d", n)
+	}
+	// Périmée : relue.
+	t0 := time.Now()
+	c.Now = func() time.Time { return t0.Add(DiscoveryTTL + time.Minute) }
+	if _, err := c.AuthURL(ctx, NouvelleTentative(false)); err != nil || discoveries(f) != 2 {
+		t.Fatalf("Discovery périmée non relue : %v %d", err, discoveries(f))
+	}
+	// Périmée et IRUNDO injoignable : le cache périmé sert (stale-if-error)…
 	c.cfg.HTTPClient.CloseIdleConnections()
-	f.Close() // IRUNDO injoignable : la Discovery en cache suffit à construire l'adresse
-	if _, err := c.AuthURL(context.Background(), NouvelleTentative(false)); err != nil {
-		t.Fatal(err)
+	f.Close()
+	c.Now = func() time.Time { return t0.Add(3 * DiscoveryTTL) }
+	if _, err := c.AuthURL(ctx, NouvelleTentative(false)); err != nil {
+		t.Fatalf("stale-if-error : %v", err)
 	}
-	c.Now = func() time.Time { return time.Now().Add(DiscoveryTTL + time.Minute) }
-	if _, err := c.AuthURL(context.Background(), NouvelleTentative(false)); err == nil {
-		t.Fatal("Discovery périmée non relue")
+	// … et un client sans aucune Discovery échoue.
+	_, c2 := setup(t)
+	c2.cfg.Issuer = "http://127.0.0.1:1"
+	if _, err := c2.AuthURL(ctx, NouvelleTentative(false)); err == nil {
+		t.Fatal("aucune Discovery : erreur attendue")
+	}
+}
+
+func discoveries(f *fakeirundo.Server) int {
+	f.Mu.Lock()
+	defer f.Mu.Unlock()
+	return f.Calls["discovery"]
+}
+
+// Des appels concurrents ne déclenchent qu'une lecture de la Discovery, sans tenir le verrou
+// pendant l'appel réseau (go test -race).
+func TestDiscoveryConcurrente(t *testing.T) {
+	f, c := setup(t)
+	var wg sync.WaitGroup
+	for range 20 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := c.AuthURL(context.Background(), NouvelleTentative(false)); err != nil {
+				t.Error(err)
+			}
+		}()
+	}
+	wg.Wait()
+	if n := discoveries(f); n != 1 {
+		t.Fatalf("lectures concurrentes : %d", n)
+	}
+}
+
+// Contrôles de l'id_token (fournisseur-oidc.md § 4.2 bis) : chacun de ces id_token est refusé.
+// Chaque cas tombe si le contrôle correspondant est retiré du client (SkipClientIDCheck,
+// SkipExpiryCheck, SupportedSigningAlgs).
+func TestIDTokenRefuse(t *testing.T) {
+	autre, _ := rsa.GenerateKey(rand.Reader, 2048)
+	cas := []struct {
+		nom   string
+		forge func(f *fakeirundo.Server, c map[string]any) string
+	}{
+		{"aud d'un autre client", func(f *fakeirundo.Server, c map[string]any) string {
+			c["aud"] = "fedcba9876543210fedcba9876543210"
+			return fakeirundo.SignWith("RS256", f.Key, f.Kid, c)
+		}},
+		{"exp dépassé", func(f *fakeirundo.Server, c map[string]any) string {
+			c["exp"] = time.Now().Add(-10 * time.Minute).Unix()
+			c["iat"] = time.Now().Add(-20 * time.Minute).Unix()
+			return fakeirundo.SignWith("RS256", f.Key, f.Kid, c)
+		}},
+		{"signé d'une autre clé", func(f *fakeirundo.Server, c map[string]any) string {
+			return fakeirundo.SignWith("RS256", autre, f.Kid, c)
+		}},
+		{"HS256 (clé publique en secret)", func(f *fakeirundo.Server, c map[string]any) string {
+			return fakeirundo.SignWith("HS256", f.Key.PublicKey.N.Bytes(), f.Kid, c)
+		}},
+		{"alg none", func(f *fakeirundo.Server, c map[string]any) string {
+			return fakeirundo.SignWith("none", nil, f.Kid, c)
+		}},
+		{"ES256 d'une clé publiée (alg non épinglé)", func(f *fakeirundo.Server, c map[string]any) string {
+			return fakeirundo.SignWith("ES256", f.ECKey, "ec-1", c)
+		}},
+		{"iss d'un autre fournisseur", func(f *fakeirundo.Server, c map[string]any) string {
+			c["iss"] = "https://ailleurs.example.org"
+			return fakeirundo.SignWith("RS256", f.Key, f.Kid, c)
+		}},
+	}
+	for _, k := range cas {
+		t.Run(k.nom, func(t *testing.T) {
+			f, c := setup(t)
+			f.PublishEC = true // ES256 annoncé et sa clé publiée : seul l'épinglage RS256 le refuse
+			f.IDTokenForge = func(claims map[string]any) string { return k.forge(f, claims) }
+			tt := NouvelleTentative(false)
+			code, err := c.CheckCallback(navigue(t, c, tt), tt)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := c.Exchange(context.Background(), code, tt); err == nil || !strings.Contains(err.Error(), "id_token") {
+				t.Fatalf("id_token accepté : %v", err)
+			}
+		})
+	}
+	// Témoin : la même mécanique, avec un id_token correct, est acceptée.
+	f, c := setup(t)
+	f.PublishEC = true
+	f.IDTokenForge = func(claims map[string]any) string { return fakeirundo.SignWith("RS256", f.Key, f.Kid, claims) }
+	tt := NouvelleTentative(false)
+	code, _ := c.CheckCallback(navigue(t, c, tt), tt)
+	if _, err := c.Exchange(context.Background(), code, tt); err != nil {
+		t.Fatalf("témoin refusé : %v", err)
 	}
 }
 
@@ -222,11 +329,14 @@ func TestTypIDToken(t *testing.T) {
 func TestJetonMachine(t *testing.T) {
 	f, c := setup(t)
 	ctx := context.Background()
-	t1, err := c.MachineToken(ctx)
-	if err != nil {
-		t.Fatal(err)
+	t1, fresh1, err := c.MachineToken(ctx)
+	if err != nil || !fresh1 {
+		t.Fatal(err, fresh1)
 	}
-	t2, _ := c.MachineToken(ctx)
+	t2, fresh2, _ := c.MachineToken(ctx)
+	if fresh2 {
+		t.Fatal("jeton du cache annoncé neuf")
+	}
 	f.Mu.Lock()
 	n := f.Calls["token:client_credentials"]
 	form, auth := f.TokenForms[0], f.TokenAuth[0]
@@ -239,13 +349,13 @@ func TestJetonMachine(t *testing.T) {
 	}
 	// Proche de l'échéance (marge 30 s) : redemandé.
 	c.Now = func() time.Time { return time.Now().Add(900*time.Second - 20*time.Second) }
-	t3, _ := c.MachineToken(ctx)
+	t3, _, _ := c.MachineToken(ctx)
 	c.Now = time.Now
 	if t3 == t1 {
 		t.Fatal("jeton à moins de 30 s de son échéance réutilisé")
 	}
 	c.ForgetMachineToken()
-	if _, err := c.MachineToken(ctx); err != nil {
+	if _, _, err := c.MachineToken(ctx); err != nil {
 		t.Fatal(err)
 	}
 	f.Mu.Lock()
@@ -256,13 +366,19 @@ func TestJetonMachine(t *testing.T) {
 		t.Fatalf("%d", n)
 	}
 	c.ForgetMachineToken()
-	if _, err := c.MachineToken(ctx); !errors.Is(err, ErrMachineScope) || TokenErrorStatus(err) != 400 {
+	if _, _, err := c.MachineToken(ctx); !errors.Is(err, ErrMachineScope) || TokenErrorStatus(err) != 400 {
 		t.Fatalf("invalid_scope : %v", err)
 	}
 	f.Mu.Lock()
 	f.ClientSecret = "autre"
 	f.Mu.Unlock()
-	if _, err := c.MachineToken(ctx); err == nil || TokenErrorStatus(err) != 401 {
+	if _, _, err := c.MachineToken(ctx); !errors.Is(err, ErrInvalidClient) || TokenErrorStatus(err) != 401 {
 		t.Fatalf("invalid_client : %v", err)
+	}
+	if assainir("x\u0000y") != "code inconnu" || assainir("") != "" || assainir("invalid_grant") != "invalid_grant" {
+		t.Fatal("assainir")
+	}
+	if b := Borne("a\nb"+strings.Repeat("c", 300), 10); strings.Contains(b, "\n") || len([]rune(b)) > 11 {
+		t.Fatal(b)
 	}
 }

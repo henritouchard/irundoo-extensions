@@ -64,7 +64,8 @@ func TestScriptADeBlanc(t *testing.T) {
 	}{
 		{[]string{"--profile", "vm"}, etat.NonObserve, ""},
 		{[]string{"--profile", "physical"}, etat.Sain, ""},
-		{[]string{"--profile", "redfish"}, etat.Critique, "redfish.power.redundancy"},
+		// Carte Redfish de l'hôte de virtualisation : signaux de l'hôte, pas l'état de l'établissement.
+		{[]string{"--profile", "redfish"}, etat.NonObserve, "redfish.power.redundancy"},
 		{[]string{"--profile", "physical", "--degrade", "md-degraded"}, etat.Critique, "md[md0].degraded"},
 		{[]string{"--profile", "vm", "--degrade", "disk-smart"}, etat.Critique, "disk[vda].smart.passed"},
 		{[]string{"--profile", "vm", "--degrade", "psu"}, etat.Critique, "redfish.power.supplies[PS2 Status].health"},
@@ -117,7 +118,7 @@ func TestScriptADeBlanc(t *testing.T) {
 			}
 			if c.cle != "" {
 				found := false
-				for _, s := range r.Signaux {
+				for _, s := range append(r.Signaux, r.SignauxHote...) {
 					found = found || s.Cle == c.cle
 				}
 				if !found {
@@ -134,10 +135,18 @@ func TestScriptRefus(t *testing.T) {
 		{"--token", "abc"}, {"--profile", "autre"}, {"--count", "51"}, {"--count", "0"},
 		{"--degrade", "autre"}, {"--sources", "pas-du-json"}, {"--message-id", "x"},
 		{"--count", "2", "--message-id", "6f1c2b7e-3a4d-4e5f-8a9b-0c1d2e3f4a5b"}, {"--inconnue"},
+		{"--extension-key", "Mauvaise Clé"}, {"--extension-key", "-x"}, {"--extension-key", strings.Repeat("a", 65)},
+		{"--max-time", "abc"}, {"--max-time", "0"}, {"--connect-timeout", "9999"},
+		{"--profile"}, {"--degrade"}, {"--profile", "vm", "--degrade", "psu", "--degrade", "autre"},
 	} {
 		if _, _, err := depose(t, nil, "", append(args, "--dry-run")...); err == nil {
 			t.Errorf("accepté : %v", args)
 		}
+	}
+	// Une option invalide est refusée avant tout envoi, même placée après une option valide.
+	if _, errOut, err := depose(t, []string{"IRUNDO_URL=http://127.0.0.1:1"}, "jeton\n", "--degrade", "psu", "--degrade", "autre"); err == nil ||
+		!strings.Contains(errOut, "--degrade") || strings.Contains(errOut, "requête") {
+		t.Errorf("--degrade invalide : %v %s", err, errOut)
 	}
 	// Envoi sans IRUNDO_URL, ou sans jeton : refusé.
 	if _, _, err := depose(t, nil, ""); err == nil {
@@ -196,5 +205,26 @@ func TestScriptEnvoi(t *testing.T) {
 	}
 	if n != 3 {
 		t.Fatal(n)
+	}
+	// Un jeton portant « " » et « \ » arrive intact (échappé dans la configuration de curl).
+	const bizarre = `a"b\c`
+	_ = os.WriteFile(tf, []byte(bizarre+"\n"), 0o600)
+	_, errOut, err = depose(t, []string{"IRUNDO_URL=" + srv.URL, "TOKEN_FILE=" + tf}, "", "--max-time", "5", "--connect-timeout", "2")
+	if err == nil || recu.auth != "Bearer "+bizarre {
+		t.Fatalf("%q %v %s", recu.auth, err, errOut)
+	}
+	if strings.Contains(errOut, "avertissement") {
+		t.Fatal("avertissement http sur loopback")
+	}
+}
+
+// IRUNDO_URL en http:// hors loopback : avertissement (le jeton passerait en clair).
+func TestScriptAvertitHTTP(t *testing.T) {
+	outils(t)
+	tf := filepath.Join(t.TempDir(), "token")
+	_ = os.WriteFile(tf, []byte("jeton\n"), 0o600)
+	_, errOut, err := depose(t, []string{"IRUNDO_URL=http://irundo.invalid", "TOKEN_FILE=" + tf}, "", "--connect-timeout", "1", "--max-time", "2")
+	if err == nil || !strings.Contains(errOut, "avertissement : IRUNDO_URL en http:// hors loopback") {
+		t.Fatal(err, errOut)
 	}
 }

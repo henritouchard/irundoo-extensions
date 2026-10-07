@@ -1,6 +1,10 @@
 # Terminaison TLS devant la centralisatrice (elle écoute en HTTP sur 127.0.0.1:8090).
 # Le certificat doit être reconnu par le magasin du conteneur IRUNDO (sonde de santé, TLS vérifié).
+# Caddy ajoute l'adresse du client en fin de X-Forwarded-For : la centralisatrice ne lit cet en-tête
+# que d'un pair loopback, pour la seule limite de débit des connexions. Elle pose aussi HSTS
+# elle-même quand PUBLIC_URL est en https ; le doublon ici couvre les réponses du proxy.
 centralisation-materiel.example.org {
+	header Strict-Transport-Security "max-age=31536000"
 	reverse_proxy 127.0.0.1:8090
 }
 
@@ -10,8 +14,11 @@ centralisation-materiel.example.org {
 #     server_name centralisation-materiel.example.org;
 #     ssl_certificate     /etc/ssl/…/fullchain.pem;
 #     ssl_certificate_key /etc/ssl/…/privkey.pem;
+#     add_header Strict-Transport-Security "max-age=31536000" always;
 #     location / {
 #         proxy_pass http://127.0.0.1:8090;
 #         proxy_set_header Host $host;
+#         # Adresse du client (limite de débit des connexions) : ajoutée en fin de liste.
+#         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
 #     }
 # }

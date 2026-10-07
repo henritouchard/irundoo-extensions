@@ -1,9 +1,20 @@
 # Exemple : la centralisatrice derrière un proxy TLS (deploy/Caddyfile.example).
 # Le secret client est un fichier 0600 monté en lecture seule, jamais une variable en clair ici.
+#
+# Propriété du fichier secret : Compose (hors Swarm) monte un secret `file:` tel quel, avec le
+# propriétaire et le mode de l'hôte (les clés uid/gid/mode y sont ignorées). L'image tourne en
+# `nonroot` (uid/gid 65532) : le fichier doit lui être lisible, sans l'ouvrir à tous :
+#   install -m 0600 -o 65532 -g 65532 /dev/stdin ./client_secret   # puis coller le secret, Ctrl-D
+# Variante : garder le fichier à votre utilisateur et lancer le conteneur sous votre uid/gid
+# (`user: "1000:1000"` ci-dessous), le volume de données devant alors lui appartenir aussi.
 services:
   centralisation-materiel:
     image: centralisation-materiel:0.1.0
     restart: unless-stopped
+    # user: "1000:1000"           # variante : uid/gid propriétaire de ./client_secret
+    read_only: true               # seul le volume de données est écrit
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
     environment:
       IRUNDOO_ISSUER: https://irundo.example.org/controlhub
       CLIENT_ID: "<32 hex remis par ext:client:register>"
@@ -19,6 +30,6 @@ services:
       - "127.0.0.1:8090:8090"   # le proxy TLS seul y accède
 secrets:
   client_secret:
-    file: ./client_secret        # chmod 600
+    file: ./client_secret        # 0600, propriétaire 65532 (voir en tête)
 volumes:
   centralisation-materiel:

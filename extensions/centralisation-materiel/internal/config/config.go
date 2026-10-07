@@ -26,6 +26,8 @@ type Config struct {
 	RetentionDays int
 	LogLevel      slog.Level
 	InsecureDev   bool
+	// SecureCookies : dérivé du schéma de PUBLIC_URL (https ⇒ cookies Secure, préfixe __Host-, HSTS).
+	SecureCookies bool
 	// Warnings : avertissements à journaliser (jamais une valeur secrète).
 	Warnings []string
 }
@@ -55,6 +57,11 @@ func Load(getenv func(string) string) (Config, error) {
 	if err := absURL("IRUNDOO_ISSUER", c.Issuer, true); err != nil {
 		return c, err
 	}
+	// Le secret client part vers l'issuer (client_secret_basic) et le jeton vers son API : jamais en
+	// clair hors développement.
+	if !strings.HasPrefix(c.Issuer, "https://") && !c.InsecureDev {
+		return c, fmt.Errorf("IRUNDOO_ISSUER : https:// obligatoire hors développement (DEV_INSECURE_COOKIES=true)")
+	}
 	if c.ClientID, err = need("CLIENT_ID"); err != nil {
 		return c, err
 	}
@@ -82,6 +89,7 @@ func Load(getenv func(string) string) (Config, error) {
 	if !strings.HasPrefix(c.PublicURL, "https://") && !c.InsecureDev {
 		return c, fmt.Errorf("PUBLIC_URL : https:// obligatoire hors développement (DEV_INSECURE_COOKIES=true)")
 	}
+	c.SecureCookies = strings.HasPrefix(c.PublicURL, "https://")
 	if v := strings.TrimSpace(getenv("LISTEN")); v != "" {
 		c.Listen = v
 	}
