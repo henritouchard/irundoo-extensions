@@ -1,0 +1,643 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:irundoo:schema:hardware:1",
+  "title": "Charge hardware/v1 (mesures matérielles d'une instance)",
+  "description": "Contenu de messages[].payload quand messages[].kind = \"hardware/v1\" (enveloppe se5-extension-relay/v1). Spécification : contrat-mesures-materielles-v1.md § 5. Liste des clés : monitoring-materiel-inventaire.md § 5 (EXT-D.1). Toutes les clés sont optionnelles ; une clé absente n'est jamais null. Pas d'additionalProperties : une clé inconnue est acceptée par IRUNDO et non stockée (évolution additive, même kind). Parité avec App\\Services\\Monitoring\\HardwareV1Catalogue tenue par tests/Unit/Monitoring/MeasurementContractDocumentTest.php. Unités : *_b octets, *_s secondes, *_pct 0-100, *_c degrés Celsius, *_mib mébioctets, *_w watts, *_h heures. *_masked : au plus quatre caractères visibles (IRUNDO re-masque au-delà).",
+  "type": "object",
+  "properties": {
+    "sources": {
+      "type": "object",
+      "propertyNames": {
+        "pattern": "^[a-z]{1,16}$"
+      },
+      "maxProperties": 8,
+      "additionalProperties": {
+        "type": "string",
+        "enum": [
+          "ok",
+          "partial",
+          "absent",
+          "unauthorized",
+          "unreachable",
+          "timeout",
+          "tls",
+          "error"
+        ]
+      }
+    },
+    "host": {
+      "type": "object",
+      "properties": {
+        "profile": {
+          "type": "string",
+          "enum": [
+            "physical",
+            "vm",
+            "container"
+          ]
+        },
+        "virt": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "vendor": {
+          "type": "string",
+          "maxLength": 255
+        },
+        "model": {
+          "type": "string",
+          "maxLength": 255
+        },
+        "board": {
+          "type": "string",
+          "maxLength": 255
+        },
+        "bios_version": {
+          "type": "string",
+          "maxLength": 255
+        },
+        "bios_date": {
+          "type": "string",
+          "maxLength": 32
+        }
+      }
+    },
+    "os": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "version": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "kernel": {
+          "type": "string",
+          "maxLength": 255
+        },
+        "uptime_s": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740992
+        },
+        "boot_id": {
+          "type": "string",
+          "maxLength": 36
+        }
+      }
+    },
+    "cpu": {
+      "type": "object",
+      "properties": {
+        "model": {
+          "type": "string",
+          "maxLength": 255
+        },
+        "count": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740992
+        },
+        "load1": {
+          "type": "number"
+        },
+        "load5": {
+          "type": "number"
+        },
+        "load15": {
+          "type": "number"
+        },
+        "temp_c": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "type": "object",
+            "properties": {
+              "sensor": {
+                "type": "string",
+                "maxLength": 255
+              },
+              "value": {
+                "type": "number"
+              },
+              "crit": {
+                "type": "number"
+              }
+            }
+          }
+        }
+      }
+    },
+    "mem": {
+      "type": "object",
+      "properties": {
+        "total_b": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740992
+        },
+        "available_b": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740992
+        },
+        "swap_total_b": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740992
+        },
+        "swap_free_b": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740992
+        },
+        "temp_c": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "type": "object",
+            "properties": {
+              "sensor": {
+                "type": "string",
+                "maxLength": 255
+              },
+              "value": {
+                "type": "number"
+              },
+              "crit": {
+                "type": "number"
+              }
+            }
+          }
+        },
+        "edac": {
+          "type": "array",
+          "maxItems": 16,
+          "items": {
+            "type": "object",
+            "properties": {
+              "mc": {
+                "type": "string",
+                "maxLength": 64
+              },
+              "ce": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740992
+              },
+              "ue": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740992
+              },
+              "size_b": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740992
+              }
+            }
+          }
+        }
+      }
+    },
+    "disk": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 64
+          },
+          "model": {
+            "type": "string",
+            "maxLength": 255
+          },
+          "serial_masked": {
+            "type": "string",
+            "maxLength": 64,
+            "pattern": "^\\**[^*]{0,4}$"
+          },
+          "size_b": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740992
+          },
+          "rotational": {
+            "type": "boolean"
+          },
+          "transport": {
+            "type": "string",
+            "maxLength": 32
+          },
+          "driver": {
+            "type": "string",
+            "maxLength": 64
+          },
+          "ioerr": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740992
+          },
+          "temp_c": {
+            "type": "number"
+          },
+          "smart": {
+            "type": "object",
+            "properties": {
+              "passed": {
+                "type": "boolean"
+              },
+              "power_on_h": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740992
+              },
+              "reallocated": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740992
+              },
+              "pending": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740992
+              },
+              "uncorrectable": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740992
+              },
+              "pct_used": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740992
+              },
+              "media_errors": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740992
+              },
+              "critical_warning": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740992
+              }
+            }
+          }
+        }
+      }
+    },
+    "fs": {
+      "type": "array",
+      "maxItems": 16,
+      "items": {
+        "type": "object",
+        "properties": {
+          "mount": {
+            "type": "string",
+            "maxLength": 255
+          },
+          "fstype": {
+            "type": "string",
+            "enum": [
+              "ext2",
+              "ext3",
+              "ext4",
+              "xfs",
+              "btrfs",
+              "zfs",
+              "vfat",
+              "f2fs"
+            ]
+          },
+          "size_b": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740992
+          },
+          "used_b": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740992
+          },
+          "inodes_used_pct": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740992
+          }
+        },
+        "required": [
+          "fstype"
+        ]
+      }
+    },
+    "md": {
+      "type": "array",
+      "maxItems": 32,
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 64
+          },
+          "level": {
+            "type": "string",
+            "maxLength": 32
+          },
+          "array_state": {
+            "type": "string",
+            "maxLength": 32
+          },
+          "degraded": {
+            "type": "boolean"
+          },
+          "raid_disks": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740992
+          },
+          "sync_action": {
+            "type": "string",
+            "maxLength": 32
+          },
+          "sync_pct": {
+            "type": "number"
+          },
+          "mismatch": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740992
+          }
+        }
+      }
+    },
+    "redfish": {
+      "type": "object",
+      "properties": {
+        "scope": {
+          "type": "string",
+          "enum": [
+            "self",
+            "hypervisor-host"
+          ]
+        },
+        "system": {
+          "type": "object",
+          "properties": {
+            "health": {
+              "type": "string",
+              "maxLength": 32
+            },
+            "health_rollup": {
+              "type": "string",
+              "maxLength": 32
+            },
+            "model": {
+              "type": "string",
+              "maxLength": 255
+            },
+            "sku_masked": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^\\**[^*]{0,4}$"
+            }
+          }
+        },
+        "drive": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "maxLength": 255
+              },
+              "model": {
+                "type": "string",
+                "maxLength": 255
+              },
+              "media": {
+                "type": "string",
+                "maxLength": 32
+              },
+              "capacity_b": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740992
+              },
+              "health": {
+                "type": "string",
+                "maxLength": 32
+              },
+              "failure_predicted": {
+                "type": "boolean"
+              },
+              "life_left_pct": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740992
+              }
+            }
+          }
+        },
+        "memory": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "maxLength": 255
+              },
+              "capacity_mib": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740992
+              },
+              "health": {
+                "type": "string",
+                "maxLength": 32
+              }
+            }
+          }
+        },
+        "thermal": {
+          "type": "object",
+          "properties": {
+            "temperatures": {
+              "type": "array",
+              "maxItems": 64,
+              "items": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "maxLength": 255
+                  },
+                  "value_c": {
+                    "type": "number"
+                  },
+                  "health": {
+                    "type": "string",
+                    "maxLength": 32
+                  }
+                }
+              }
+            },
+            "fans": {
+              "type": "array",
+              "maxItems": 64,
+              "items": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "maxLength": 255
+                  },
+                  "rpm": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740992
+                  },
+                  "health": {
+                    "type": "string",
+                    "maxLength": 32
+                  }
+                }
+              }
+            }
+          }
+        },
+        "power": {
+          "type": "object",
+          "properties": {
+            "supplies": {
+              "type": "array",
+              "maxItems": 8,
+              "items": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "maxLength": 255
+                  },
+                  "health": {
+                    "type": "string",
+                    "maxLength": 32
+                  }
+                }
+              }
+            },
+            "redundancy": {
+              "type": "string",
+              "maxLength": 32
+            },
+            "consumed_w": {
+              "type": "number"
+            }
+          }
+        },
+        "sel_tail": {
+          "type": "array",
+          "maxItems": 20,
+          "items": {
+            "type": "object",
+            "properties": {
+              "timestamp": {
+                "type": "string",
+                "maxLength": 32
+              },
+              "severity": {
+                "type": "string",
+                "maxLength": 32
+              },
+              "message_id": {
+                "type": "string",
+                "maxLength": 64
+              }
+            }
+          }
+        }
+      }
+    },
+    "pve": {
+      "type": "object",
+      "properties": {
+        "node": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string",
+              "maxLength": 64
+            },
+            "uptime_s": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740992
+            },
+            "load1": {
+              "type": "number"
+            },
+            "mem_total_b": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740992
+            },
+            "mem_used_b": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740992
+            }
+          }
+        },
+        "disk": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "type": "object",
+            "properties": {
+              "devpath": {
+                "type": "string",
+                "maxLength": 255
+              },
+              "model": {
+                "type": "string",
+                "maxLength": 255
+              },
+              "serial_masked": {
+                "type": "string",
+                "maxLength": 64,
+                "pattern": "^\\**[^*]{0,4}$"
+              },
+              "size_b": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740992
+              },
+              "type": {
+                "type": "string",
+                "maxLength": 32
+              },
+              "health": {
+                "type": "string",
+                "maxLength": 32
+              },
+              "wearout_pct": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740992
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

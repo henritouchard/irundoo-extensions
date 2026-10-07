@@ -1,0 +1,1737 @@
+{
+    "openapi": "3.0.0",
+    "info": {
+        "title": "API des extensions IRUNDO",
+        "description": "API publique, versionnée, servie par IRUNDO aux extensions `app` (D12). Préfixe : `{issuer}/api/v1/extensions` ; `v1` est dans le chemin, la surface ne change que par ajout (clé, route, scope, code), une rupture se livre dans `v2`, à côté (NFR9).\n\nAuthentification : `Authorization: Bearer <access_token>` seul, jeton `at+jwt` du fournisseur OIDC d'IRUNDO (Discovery : `{issuer}/.well-known/openid-configuration`). Chaque opération exige **un** scope (`security`). `x-irundoo-token` dit le type de jeton admis (`user` : jeton utilisateur seul ; `user-or-machine` : les deux) ; `x-irundoo-user-right`, quand il est présent, nomme le droit IRUNDO que l'utilisateur du jeton doit détenir (droit d'un statut IRUNDO, jamais un groupe de l'annuaire).\n\nEnveloppe : `{\"<ressource>\": …, \"reduced\": <bool>}` ; réponses `no-store`. L'instance se désigne par `?instance=<uuid>` (listes) ou par le segment `{instance}`, jamais dans le corps.\n\nCodes : les `responses` de chaque opération sont les codes que la route rend (chacun provoqué par un test du dépôt). Hors enveloppe et non déclarés par opération, rendus par le cadre HTTP avant la route : `405` (verbe non servi sur un chemin existant), `404` (chemin hors de la surface), `413` (corps au-delà de la limite du serveur) ; leur corps n'est pas un `Error`.\n\nGuide : `documentation/extensions/guide-developpeur.md` ; contrat humain : `documentation/extensions/api-v1.md`.",
+        "contact": {
+            "name": "IRUNDO"
+        },
+        "version": "1"
+    },
+    "servers": [
+        {
+            "url": "{issuer}/api/v1/extensions",
+            "description": "La surface v1 sous l'issuer OIDC d'IRUNDO.",
+            "variables": {
+                "issuer": {
+                    "default": "https://irundo.example.org",
+                    "description": "L'issuer OIDC lu dans la Discovery, préfixe de chemin compris (ex. `https://irundo.example.org/controlhub`)."
+                }
+            }
+        }
+    ],
+    "paths": {
+        "/hardware": {
+            "get": {
+                "tags": [
+                    "Mesures"
+                ],
+                "summary": "La dernière mesure matérielle par établissement",
+                "description": "La dernière mesure matérielle relayée par chaque établissement du périmètre effectif : une entrée par (établissement, extension productrice), la plus récente par `least(collected_at, received_at)` (la collecte, plafonnée à la réception par IRUNDO), puis `received_at`, triées par `instance_id` puis `extension_key`. Un établissement sans mesure n'a pas d'entrée.\n\n`payload` est la charge `hardware/v1` normalisée (liste blanche ; contrat : `contrat-mesures-materielles-v1.md` § 5).\n\n`?instance=<uuid>` réduit la liste à l'établissement désigné, vérifié par la garde.\n\nJeton utilisateur ou machine. Aucun droit IRUNDO exigé. Réponse `no-store`, en-têtes `X-RateLimit-*`.",
+                "operationId": "api.extensions.v1.hardware",
+                "parameters": [
+                    {
+                        "$ref": "#/components/parameters/InstanceQuery"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Les dernières mesures du périmètre.",
+                        "headers": {
+                            "X-RateLimit-Limit": {
+                                "$ref": "#/components/headers/X-RateLimit-Limit"
+                            },
+                            "X-RateLimit-Remaining": {
+                                "$ref": "#/components/headers/X-RateLimit-Remaining"
+                            }
+                        },
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HardwareResponse"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "$ref": "#/components/responses/Unauthorized"
+                    },
+                    "403": {
+                        "$ref": "#/components/responses/Forbidden"
+                    },
+                    "429": {
+                        "$ref": "#/components/responses/RateLimited"
+                    },
+                    "503": {
+                        "$ref": "#/components/responses/ServerUnavailable"
+                    }
+                },
+                "security": [
+                    {
+                        "irundooOidc": [
+                            "irundoo:hardware:read"
+                        ]
+                    }
+                ],
+                "x-irundoo-token": "user-or-machine"
+            }
+        },
+        "/instances": {
+            "get": {
+                "tags": [
+                    "Établissements"
+                ],
+                "summary": "Les établissements du périmètre",
+                "description": "Les établissements du périmètre effectif de l'extension (nom, UAI, type, zone, état), triés par `id`. Sept clés par établissement, toujours présentes ; une valeur inconnue vaut `null`.\n\n`?instance=<uuid>` réduit la liste à l'établissement désigné, vérifié par la garde.\n\nJeton utilisateur ou machine. Aucun droit IRUNDO exigé. Réponse `no-store`, en-têtes `X-RateLimit-*`.",
+                "operationId": "api.extensions.v1.instances",
+                "parameters": [
+                    {
+                        "$ref": "#/components/parameters/InstanceQuery"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Les établissements du périmètre.",
+                        "headers": {
+                            "X-RateLimit-Limit": {
+                                "$ref": "#/components/headers/X-RateLimit-Limit"
+                            },
+                            "X-RateLimit-Remaining": {
+                                "$ref": "#/components/headers/X-RateLimit-Remaining"
+                            }
+                        },
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/InstancesResponse"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "$ref": "#/components/responses/Unauthorized"
+                    },
+                    "403": {
+                        "$ref": "#/components/responses/Forbidden"
+                    },
+                    "429": {
+                        "$ref": "#/components/responses/RateLimited"
+                    },
+                    "503": {
+                        "$ref": "#/components/responses/ServerUnavailable"
+                    }
+                },
+                "security": [
+                    {
+                        "irundooOidc": [
+                            "irundoo:instances:read"
+                        ]
+                    }
+                ],
+                "x-irundoo-token": "user-or-machine"
+            }
+        },
+        "/instances/{instance}": {
+            "get": {
+                "tags": [
+                    "Établissements"
+                ],
+                "summary": "Un établissement du périmètre",
+                "description": "Un établissement du périmètre, désigné par le segment `{instance}` (la clé de query `instance` n'est pas lue sur cette route). Hors périmètre, inconnu, mal formé ou disparu depuis la garde : `403 out_of_perimeter`, réponse identique.\n\nJeton utilisateur ou machine. Aucun droit IRUNDO exigé. Réponse `no-store`, en-têtes `X-RateLimit-*`.",
+                "operationId": "api.extensions.v1.instances.show",
+                "parameters": [
+                    {
+                        "$ref": "#/components/parameters/InstancePath"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "L'établissement désigné.",
+                        "headers": {
+                            "X-RateLimit-Limit": {
+                                "$ref": "#/components/headers/X-RateLimit-Limit"
+                            },
+                            "X-RateLimit-Remaining": {
+                                "$ref": "#/components/headers/X-RateLimit-Remaining"
+                            }
+                        },
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/InstanceResponse"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "$ref": "#/components/responses/Unauthorized"
+                    },
+                    "403": {
+                        "$ref": "#/components/responses/Forbidden"
+                    },
+                    "429": {
+                        "$ref": "#/components/responses/RateLimited"
+                    },
+                    "503": {
+                        "$ref": "#/components/responses/ServerUnavailable"
+                    }
+                },
+                "security": [
+                    {
+                        "irundooOidc": [
+                            "irundoo:instances:read"
+                        ]
+                    }
+                ],
+                "x-irundoo-token": "user-or-machine"
+            }
+        },
+        "/instances/{instance}/objects": {
+            "get": {
+                "tags": [
+                    "Objets"
+                ],
+                "summary": "Les objets de l'extension sur un établissement",
+                "description": "Les objets de l'extension appelante sur l'établissement, triés par clé, sans leur document (`body_bytes` en donne la taille) ; `[]` si aucun, jamais `404`. Les objets d'une autre extension ne sont jamais visibles.\n\nJeton utilisateur ou machine. Aucun droit IRUNDO exigé. Réponse `no-store`, en-têtes `X-RateLimit-*`. Contrat : api-v1.md § 10.",
+                "operationId": "api.extensions.v1.instances.objects",
+                "parameters": [
+                    {
+                        "$ref": "#/components/parameters/InstancePath"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Les objets de l'extension sur l'établissement.",
+                        "headers": {
+                            "X-RateLimit-Limit": {
+                                "$ref": "#/components/headers/X-RateLimit-Limit"
+                            },
+                            "X-RateLimit-Remaining": {
+                                "$ref": "#/components/headers/X-RateLimit-Remaining"
+                            }
+                        },
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ObjectsResponse"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "$ref": "#/components/responses/Unauthorized"
+                    },
+                    "403": {
+                        "$ref": "#/components/responses/Forbidden"
+                    },
+                    "429": {
+                        "$ref": "#/components/responses/RateLimited"
+                    },
+                    "503": {
+                        "$ref": "#/components/responses/ServerUnavailable"
+                    }
+                },
+                "security": [
+                    {
+                        "irundooOidc": [
+                            "irundoo:objects:read"
+                        ]
+                    }
+                ],
+                "x-irundoo-token": "user-or-machine"
+            }
+        },
+        "/instances/{instance}/objects/{key}": {
+            "get": {
+                "tags": [
+                    "Objets"
+                ],
+                "summary": "Un objet de l'extension",
+                "description": "Un objet de l'extension appelante, document compris, et son `ETag` (à renvoyer en `If-Match` pour remplacer ou supprimer). Une clé que l'appelante n'a pas sur l'établissement — y compris la clé d'une autre extension — est `404 object_not_found` ; une clé mal formée, `422 invalid_request` (jugée avant toute lecture).\n\nJeton utilisateur ou machine. Aucun droit IRUNDO exigé. Réponse `no-store`, en-têtes `ETag`, `X-RateLimit-*`. Contrat : api-v1.md § 10.",
+                "operationId": "api.extensions.v1.instances.objects.show",
+                "parameters": [
+                    {
+                        "$ref": "#/components/parameters/InstancePath"
+                    },
+                    {
+                        "$ref": "#/components/parameters/ObjectKey"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "L'objet et son document.",
+                        "headers": {
+                            "ETag": {
+                                "$ref": "#/components/headers/ETag"
+                            },
+                            "X-RateLimit-Limit": {
+                                "$ref": "#/components/headers/X-RateLimit-Limit"
+                            },
+                            "X-RateLimit-Remaining": {
+                                "$ref": "#/components/headers/X-RateLimit-Remaining"
+                            }
+                        },
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ObjectResponse"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "$ref": "#/components/responses/Unauthorized"
+                    },
+                    "403": {
+                        "$ref": "#/components/responses/Forbidden"
+                    },
+                    "404": {
+                        "description": "`object_not_found` : clé inconnue pour l'extension appelante sur cet établissement.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "`invalid_request` : `key` mal formée ; `errors` la nomme.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorInvalidRequest"
+                                }
+                            }
+                        }
+                    },
+                    "429": {
+                        "$ref": "#/components/responses/RateLimited"
+                    },
+                    "503": {
+                        "$ref": "#/components/responses/ServerUnavailable"
+                    }
+                },
+                "security": [
+                    {
+                        "irundooOidc": [
+                            "irundoo:objects:read"
+                        ]
+                    }
+                ],
+                "x-irundoo-token": "user-or-machine"
+            },
+            "put": {
+                "tags": [
+                    "Objets"
+                ],
+                "summary": "Créer ou remplacer un objet de l'extension",
+                "description": "Crée (`If-None-Match: *`, `201`) ou remplace (`If-Match: \"<etag>\"`, `200`) un objet de l'extension appelante. Le corps de la requête **est** le document : un objet JSON non vide, `Content-Type` non exigé. Exactement une précondition : aucune ⇒ `428` ; une qui ne tient pas, ou de forme non reconnue ⇒ `412`. Ordre d'évaluation : garde → clé (`422`) → corps (`422`) → précondition (`428`, `412`) → plafond (`409`, création seule).\n\nJeton utilisateur ou machine. Aucun droit IRUNDO exigé (l'objet appartient à l'extension). Réponse `no-store`, en-têtes `ETag`, `X-RateLimit-*`. Bornes et table des préconditions : api-v1.md § 10.",
+                "operationId": "api.extensions.v1.instances.objects.put",
+                "parameters": [
+                    {
+                        "$ref": "#/components/parameters/InstancePath"
+                    },
+                    {
+                        "$ref": "#/components/parameters/ObjectKey"
+                    },
+                    {
+                        "$ref": "#/components/parameters/IfMatch"
+                    },
+                    {
+                        "$ref": "#/components/parameters/IfNoneMatch"
+                    }
+                ],
+                "requestBody": {
+                    "description": "Le document déposé.",
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/ObjectBody"
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "description": "Objet remplacé (`If-Match`).",
+                        "headers": {
+                            "ETag": {
+                                "$ref": "#/components/headers/ETag"
+                            },
+                            "X-RateLimit-Limit": {
+                                "$ref": "#/components/headers/X-RateLimit-Limit"
+                            },
+                            "X-RateLimit-Remaining": {
+                                "$ref": "#/components/headers/X-RateLimit-Remaining"
+                            }
+                        },
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ObjectResponse"
+                                }
+                            }
+                        }
+                    },
+                    "201": {
+                        "description": "Objet créé (`If-None-Match: *`).",
+                        "headers": {
+                            "ETag": {
+                                "$ref": "#/components/headers/ETag"
+                            },
+                            "X-RateLimit-Limit": {
+                                "$ref": "#/components/headers/X-RateLimit-Limit"
+                            },
+                            "X-RateLimit-Remaining": {
+                                "$ref": "#/components/headers/X-RateLimit-Remaining"
+                            }
+                        },
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ObjectResponse"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "$ref": "#/components/responses/Unauthorized"
+                    },
+                    "403": {
+                        "$ref": "#/components/responses/Forbidden"
+                    },
+                    "409": {
+                        "description": "`object_limit_reached` : création au-delà du plafond d'objets de l'extension sur l'établissement.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "412": {
+                        "description": "`precondition_failed` : la précondition ne tient pas, ou sa forme n'est pas reconnue. Relire (`GET`, `ETag`), comparer, réécrire.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "`invalid_request` : `key` mal formée ou document refusé ; `errors` nomme le champ.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorInvalidRequest"
+                                }
+                            }
+                        }
+                    },
+                    "428": {
+                        "description": "`precondition_required` : ni `If-Match`, ni `If-None-Match: *`.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "429": {
+                        "$ref": "#/components/responses/RateLimited"
+                    },
+                    "503": {
+                        "$ref": "#/components/responses/ServerUnavailable"
+                    }
+                },
+                "security": [
+                    {
+                        "irundooOidc": [
+                            "irundoo:objects:write"
+                        ]
+                    }
+                ],
+                "x-irundoo-token": "user-or-machine"
+            },
+            "delete": {
+                "tags": [
+                    "Objets"
+                ],
+                "summary": "Supprimer un objet de l'extension",
+                "description": "Supprime un objet de l'extension appelante sous `If-Match: \"<etag courant>\"` (`204`, sans corps). Sans précondition : `428` ; précondition qui ne tient pas, objet absent compris : `412` (jamais `404`). `If-None-Match` n'a pas de sens sur une suppression : envoyé, il rend toujours `412` (table des préconditions : api-v1.md § 10).\n\nJeton utilisateur ou machine. Aucun droit IRUNDO exigé (l'objet appartient à l'extension). Réponse `no-store`, en-têtes `X-RateLimit-*`. Contrat : api-v1.md § 10.",
+                "operationId": "api.extensions.v1.instances.objects.destroy",
+                "parameters": [
+                    {
+                        "$ref": "#/components/parameters/InstancePath"
+                    },
+                    {
+                        "$ref": "#/components/parameters/ObjectKey"
+                    },
+                    {
+                        "$ref": "#/components/parameters/IfMatch"
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "Objet supprimé, sans corps.",
+                        "headers": {
+                            "X-RateLimit-Limit": {
+                                "$ref": "#/components/headers/X-RateLimit-Limit"
+                            },
+                            "X-RateLimit-Remaining": {
+                                "$ref": "#/components/headers/X-RateLimit-Remaining"
+                            }
+                        }
+                    },
+                    "401": {
+                        "$ref": "#/components/responses/Unauthorized"
+                    },
+                    "403": {
+                        "$ref": "#/components/responses/Forbidden"
+                    },
+                    "412": {
+                        "description": "`precondition_failed` : la précondition ne tient pas (objet absent compris), ou sa forme n'est pas reconnue.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "`invalid_request` : `key` mal formée ; `errors` la nomme.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorInvalidRequest"
+                                }
+                            }
+                        }
+                    },
+                    "428": {
+                        "description": "`precondition_required` : aucune précondition.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "429": {
+                        "$ref": "#/components/responses/RateLimited"
+                    },
+                    "503": {
+                        "$ref": "#/components/responses/ServerUnavailable"
+                    }
+                },
+                "security": [
+                    {
+                        "irundooOidc": [
+                            "irundoo:objects:write"
+                        ]
+                    }
+                ],
+                "x-irundoo-token": "user-or-machine"
+            }
+        },
+        "/perimeter": {
+            "get": {
+                "tags": [
+                    "Périmètre"
+                ],
+                "summary": "Le périmètre effectif de l'extension",
+                "description": "Le périmètre effectif de l'extension : le claim de périmètre du jeton (voir le guide, § 5), intersecté à l'appel avec le périmètre courant (une réduction vaut dès l'appel suivant, un élargissement au jeton suivant). Les identifiants seuls ; le détail des établissements est `GET /instances`, sous un autre scope.\n\n`?instance=<uuid>` réduit la liste à l'établissement désigné, vérifié par la garde.\n\nJeton utilisateur ou machine. Aucun droit IRUNDO exigé. Réponse `no-store`, en-têtes `X-RateLimit-*`.",
+                "operationId": "api.extensions.v1.perimeter",
+                "parameters": [
+                    {
+                        "$ref": "#/components/parameters/InstanceQuery"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Le périmètre effectif, trié par `id`.",
+                        "headers": {
+                            "X-RateLimit-Limit": {
+                                "$ref": "#/components/headers/X-RateLimit-Limit"
+                            },
+                            "X-RateLimit-Remaining": {
+                                "$ref": "#/components/headers/X-RateLimit-Remaining"
+                            }
+                        },
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/PerimeterResponse"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "$ref": "#/components/responses/Unauthorized"
+                    },
+                    "403": {
+                        "$ref": "#/components/responses/Forbidden"
+                    },
+                    "429": {
+                        "$ref": "#/components/responses/RateLimited"
+                    },
+                    "503": {
+                        "$ref": "#/components/responses/ServerUnavailable"
+                    }
+                },
+                "security": [
+                    {
+                        "irundooOidc": [
+                            "irundoo:perimeter:read"
+                        ]
+                    }
+                ],
+                "x-irundoo-token": "user-or-machine"
+            }
+        },
+        "/instances/{instance}/users/{login}": {
+            "get": {
+                "tags": [
+                    "Comptes"
+                ],
+                "summary": "Un compte de l'annuaire d'un établissement",
+                "description": "Un compte de l'annuaire de l'établissement, par son `sAMAccountName`. Un compte d'un autre établissement, un login inconnu ou hors forme : `404 user_not_found`, réponse identique. Servie aussi sur une instance désactivée. La date de naissance n'est jamais servie.\n\n**Jeton utilisateur seul** : un jeton machine reçoit `403 user_token_required`. L'utilisateur du jeton doit détenir le droit IRUNDO « Consulter l'annuaire AD » (`view-ad`), porté par un statut IRUNDO et relu à chaque appel ; sinon `403 insufficient_right`. Réponse `no-store`, en-têtes `X-RateLimit-*`. Contrat : api-v1.md § 11.",
+                "operationId": "api.extensions.v1.instances.users.show",
+                "parameters": [
+                    {
+                        "$ref": "#/components/parameters/InstancePath"
+                    },
+                    {
+                        "$ref": "#/components/parameters/Login"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Le compte.",
+                        "headers": {
+                            "X-RateLimit-Limit": {
+                                "$ref": "#/components/headers/X-RateLimit-Limit"
+                            },
+                            "X-RateLimit-Remaining": {
+                                "$ref": "#/components/headers/X-RateLimit-Remaining"
+                            }
+                        },
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/UserResponse"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "$ref": "#/components/responses/Unauthorized"
+                    },
+                    "403": {
+                        "$ref": "#/components/responses/ForbiddenUserRoute"
+                    },
+                    "404": {
+                        "description": "`user_not_found` : login inconnu, rattaché à un autre établissement, ou hors forme.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "`instance_without_uai` : l'établissement n'a pas d'UAI exploitable.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "429": {
+                        "$ref": "#/components/responses/RateLimited"
+                    },
+                    "503": {
+                        "$ref": "#/components/responses/UsersUnavailable"
+                    }
+                },
+                "security": [
+                    {
+                        "irundooOidc": [
+                            "irundoo:users:read"
+                        ]
+                    }
+                ],
+                "x-irundoo-token": "user",
+                "x-irundoo-user-right": "view-ad"
+            }
+        },
+        "/instances/{instance}/users": {
+            "post": {
+                "tags": [
+                    "Comptes"
+                ],
+                "summary": "Créer un compte dans l'annuaire d'un établissement",
+                "description": "Crée un compte **désactivé**, sans mot de passe ni appartenance, dans l'annuaire de l'établissement (synchrone, `201`). Le login est choisi par IRUNDO (politique de login de l'alimentation) : le relire dans `Location`. Admission de `gpei:apply` : un `gpei_id` déjà porté n'importe où dans le domaine ⇒ `409 user_exists` ; un compte candidat ou un arbitrage « ignorer » ⇒ `409 user_ambiguous` (`arbitration` nomme le cas posé dans IRUNDO) ; établissement sans UAI ⇒ `409 instance_without_uai` ; instance désactivée ⇒ `409 instance_inactive`. Un compte créé n'est jamais suivi d'un `5xx` : un incident après la création est un `201` avec `warnings`.\n\n**Jeton utilisateur seul** : un jeton machine reçoit `403 user_token_required`. L'utilisateur du jeton doit détenir le droit IRUNDO « Gérer l'annuaire AD » (`manage-ad`), porté par un statut IRUNDO et relu à chaque appel ; sinon `403 insufficient_right`. Réponse `no-store`, en-têtes `Location`, `X-RateLimit-*`. Contrat : api-v1.md § 11.",
+                "operationId": "api.extensions.v1.instances.users.store",
+                "parameters": [
+                    {
+                        "$ref": "#/components/parameters/InstancePath"
+                    }
+                ],
+                "requestBody": {
+                    "description": "Le compte à créer.",
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/UserCreateRequest"
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "201": {
+                        "description": "Compte créé, relu dans l'annuaire.",
+                        "headers": {
+                            "Location": {
+                                "$ref": "#/components/headers/Location"
+                            },
+                            "X-RateLimit-Limit": {
+                                "$ref": "#/components/headers/X-RateLimit-Limit"
+                            },
+                            "X-RateLimit-Remaining": {
+                                "$ref": "#/components/headers/X-RateLimit-Remaining"
+                            }
+                        },
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/UserCreatedResponse"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "$ref": "#/components/responses/Unauthorized"
+                    },
+                    "403": {
+                        "$ref": "#/components/responses/ForbiddenUserRoute"
+                    },
+                    "409": {
+                        "description": "`user_exists`, `user_ambiguous` (avec `arbitration`), `instance_without_uai` ou `instance_inactive`.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "anyOf": [
+                                        {
+                                            "$ref": "#/components/schemas/ErrorUserAmbiguous"
+                                        },
+                                        {
+                                            "$ref": "#/components/schemas/Error"
+                                        }
+                                    ]
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "`invalid_request` : corps invalide ; `errors` nomme tous les champs fautifs (`body` pour un corps illisible).",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorInvalidRequest"
+                                }
+                            }
+                        }
+                    },
+                    "429": {
+                        "$ref": "#/components/responses/RateLimited"
+                    },
+                    "503": {
+                        "$ref": "#/components/responses/UsersUnavailable"
+                    }
+                },
+                "security": [
+                    {
+                        "irundooOidc": [
+                            "irundoo:users:write"
+                        ]
+                    }
+                ],
+                "x-irundoo-token": "user",
+                "x-irundoo-user-right": "manage-ad"
+            }
+        }
+    },
+    "components": {
+        "schemas": {
+            "Error": {
+                "description": "Corps d'un refus (garde ou ressource). `error_description` est un texte figé, en anglais ; l'extension décide sur `error`.",
+                "required": [
+                    "error",
+                    "error_description"
+                ],
+                "properties": {
+                    "error": {
+                        "type": "string",
+                        "enum": [
+                            "directory_unavailable",
+                            "instance_inactive",
+                            "instance_without_uai",
+                            "insufficient_right",
+                            "insufficient_scope",
+                            "invalid_request",
+                            "invalid_token",
+                            "object_limit_reached",
+                            "object_not_found",
+                            "out_of_perimeter",
+                            "perimeter_empty",
+                            "precondition_failed",
+                            "precondition_required",
+                            "rate_limited",
+                            "server_error",
+                            "user_ambiguous",
+                            "user_exists",
+                            "user_not_found",
+                            "user_token_required"
+                        ]
+                    },
+                    "error_description": {
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "ErrorInsufficientScope": {
+                "description": "`403 insufficient_scope` : `scope` nomme le scope **requis** par la route appelée, jamais les scopes détenus.",
+                "required": [
+                    "error",
+                    "error_description",
+                    "scope"
+                ],
+                "properties": {
+                    "error": {
+                        "type": "string",
+                        "enum": [
+                            "insufficient_scope"
+                        ]
+                    },
+                    "error_description": {
+                        "type": "string"
+                    },
+                    "scope": {
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "ErrorInsufficientRight": {
+                "description": "`403 insufficient_right` : `right` nomme le droit IRUNDO **requis** (`view-ad`, `manage-ad`), que l'utilisateur du jeton ne détient pas.",
+                "required": [
+                    "error",
+                    "error_description",
+                    "right"
+                ],
+                "properties": {
+                    "error": {
+                        "type": "string",
+                        "enum": [
+                            "insufficient_right"
+                        ]
+                    },
+                    "error_description": {
+                        "type": "string"
+                    },
+                    "right": {
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "ErrorInvalidRequest": {
+                "description": "`422 invalid_request` : `errors` nomme **chaque** champ fautif (`body` pour un corps illisible), une liste de messages par champ.",
+                "required": [
+                    "error",
+                    "error_description",
+                    "errors"
+                ],
+                "properties": {
+                    "error": {
+                        "type": "string",
+                        "enum": [
+                            "invalid_request"
+                        ]
+                    },
+                    "error_description": {
+                        "type": "string"
+                    },
+                    "errors": {
+                        "type": "object",
+                        "additionalProperties": {
+                            "type": "array",
+                            "items": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                },
+                "type": "object"
+            },
+            "ErrorUserAmbiguous": {
+                "description": "`409 user_ambiguous` : `arbitration` nomme le cas d'arbitrage ouvert dans IRUNDO (`null` si aucun cas n'est lisible).",
+                "required": [
+                    "error",
+                    "error_description",
+                    "arbitration"
+                ],
+                "properties": {
+                    "error": {
+                        "type": "string",
+                        "enum": [
+                            "user_ambiguous"
+                        ]
+                    },
+                    "error_description": {
+                        "type": "string"
+                    },
+                    "arbitration": {
+                        "type": "string",
+                        "nullable": true
+                    }
+                },
+                "type": "object"
+            },
+            "PerimeterEntry": {
+                "description": "Un établissement du périmètre effectif ; objet et non chaîne nue (une clé pourra s'y ajouter).",
+                "required": [
+                    "id"
+                ],
+                "properties": {
+                    "id": {
+                        "description": "uuid de l'instance, minuscules.",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "Instance": {
+                "description": "Un établissement : sept clés toujours présentes, dans cet ordre ; une valeur inconnue vaut `null`.",
+                "required": [
+                    "id",
+                    "name",
+                    "uai",
+                    "establishment_name",
+                    "establishment_type",
+                    "academic_zone",
+                    "active"
+                ],
+                "properties": {
+                    "id": {
+                        "description": "uuid de l'instance, minuscules.",
+                        "type": "string"
+                    },
+                    "name": {
+                        "description": "Nom de l'instance.",
+                        "type": "string"
+                    },
+                    "uai": {
+                        "description": "Code UAI de l'établissement.",
+                        "type": "string",
+                        "nullable": true
+                    },
+                    "establishment_name": {
+                        "type": "string",
+                        "nullable": true
+                    },
+                    "establishment_type": {
+                        "description": "Type (`college`, …).",
+                        "type": "string",
+                        "nullable": true
+                    },
+                    "academic_zone": {
+                        "type": "string",
+                        "nullable": true
+                    },
+                    "active": {
+                        "description": "Instance active dans IRUNDO ; une instance désactivée reste dans le périmètre et le dit (`false`).",
+                        "type": "boolean"
+                    }
+                },
+                "type": "object"
+            },
+            "ObjectSummary": {
+                "description": "Un objet de l'extension, sans son document (liste) : neuf clés toujours présentes.",
+                "required": [
+                    "instance",
+                    "key",
+                    "owner",
+                    "revision",
+                    "etag",
+                    "body_bytes",
+                    "written_at",
+                    "written_by_kind",
+                    "written_by_user_id"
+                ],
+                "properties": {
+                    "instance": {
+                        "description": "uuid de l'établissement, minuscules.",
+                        "type": "string"
+                    },
+                    "key": {
+                        "description": "La clé de l'objet.",
+                        "type": "string"
+                    },
+                    "owner": {
+                        "description": "L'`id` du manifeste de l'extension propriétaire.",
+                        "type": "string"
+                    },
+                    "revision": {
+                        "description": "1 à la création, + 1 à chaque remplacement.",
+                        "type": "integer"
+                    },
+                    "etag": {
+                        "description": "32 hexadécimaux : la valeur de l'en-tête `ETag`, sans guillemets.",
+                        "type": "string"
+                    },
+                    "body_bytes": {
+                        "description": "Taille du document canonique, en octets.",
+                        "type": "integer"
+                    },
+                    "written_at": {
+                        "description": "Dernière écriture, ISO 8601 UTC.",
+                        "type": "string",
+                        "format": "date-time"
+                    },
+                    "written_by_kind": {
+                        "description": "`user` ou `machine`.",
+                        "type": "string"
+                    },
+                    "written_by_user_id": {
+                        "description": "L'utilisateur du jeton (`sub`) ; `null` pour un jeton machine.",
+                        "type": "integer",
+                        "nullable": true
+                    }
+                },
+                "type": "object"
+            },
+            "Object": {
+                "description": "Un objet de l'extension avec son document : dix clés toujours présentes.",
+                "required": [
+                    "instance",
+                    "key",
+                    "owner",
+                    "revision",
+                    "etag",
+                    "body_bytes",
+                    "written_at",
+                    "written_by_kind",
+                    "written_by_user_id",
+                    "body"
+                ],
+                "properties": {
+                    "instance": {
+                        "description": "uuid de l'établissement, minuscules.",
+                        "type": "string"
+                    },
+                    "key": {
+                        "description": "La clé de l'objet.",
+                        "type": "string"
+                    },
+                    "owner": {
+                        "description": "L'`id` du manifeste de l'extension propriétaire.",
+                        "type": "string"
+                    },
+                    "revision": {
+                        "description": "1 à la création, + 1 à chaque remplacement.",
+                        "type": "integer"
+                    },
+                    "etag": {
+                        "description": "32 hexadécimaux : la valeur de l'en-tête `ETag`, sans guillemets.",
+                        "type": "string"
+                    },
+                    "body_bytes": {
+                        "description": "Taille du document canonique, en octets.",
+                        "type": "integer"
+                    },
+                    "written_at": {
+                        "description": "Dernière écriture, ISO 8601 UTC.",
+                        "type": "string",
+                        "format": "date-time"
+                    },
+                    "written_by_kind": {
+                        "description": "`user` ou `machine`.",
+                        "type": "string"
+                    },
+                    "written_by_user_id": {
+                        "description": "L'utilisateur du jeton (`sub`) ; `null` pour un jeton machine.",
+                        "type": "integer",
+                        "nullable": true
+                    },
+                    "body": {
+                        "description": "Le document déposé, opaque ; l'ordre de ses clés n'est pas préservé (api-v1.md § 10).",
+                        "type": "object",
+                        "additionalProperties": true
+                    }
+                },
+                "type": "object"
+            },
+            "ObjectBody": {
+                "description": "Le document déposé : un objet JSON non vide, sans schéma imposé. Bornes (taille brute et canonique, profondeur, caractère nul, clés dupliquées, nombres hors double) : api-v1.md § 10.",
+                "type": "object",
+                "additionalProperties": true
+            },
+            "UserIdentifiers": {
+                "description": "Les identifiants externes du compte : six clés toujours présentes.",
+                "required": [
+                    "siecle",
+                    "gpei",
+                    "asm",
+                    "pronote",
+                    "nc",
+                    "ent"
+                ],
+                "properties": {
+                    "siecle": {
+                        "type": "string",
+                        "nullable": true
+                    },
+                    "gpei": {
+                        "type": "string",
+                        "nullable": true
+                    },
+                    "asm": {
+                        "type": "string",
+                        "nullable": true
+                    },
+                    "pronote": {
+                        "type": "string",
+                        "nullable": true
+                    },
+                    "nc": {
+                        "type": "string",
+                        "nullable": true
+                    },
+                    "ent": {
+                        "type": "string",
+                        "nullable": true
+                    }
+                },
+                "type": "object"
+            },
+            "User": {
+                "description": "Un compte de l'annuaire d'un établissement : treize clés toujours présentes. La date de naissance n'est jamais servie.",
+                "required": [
+                    "login",
+                    "instance",
+                    "uai",
+                    "display_name",
+                    "first_name",
+                    "last_name",
+                    "mail",
+                    "role",
+                    "class",
+                    "active",
+                    "identifiers",
+                    "created_at",
+                    "changed_at"
+                ],
+                "properties": {
+                    "login": {
+                        "description": "`sAMAccountName`, minuscules.",
+                        "type": "string"
+                    },
+                    "instance": {
+                        "description": "uuid de l'établissement (celui de l'URL), minuscules.",
+                        "type": "string"
+                    },
+                    "uai": {
+                        "description": "Code UAI de l'établissement.",
+                        "type": "string"
+                    },
+                    "display_name": {
+                        "type": "string",
+                        "nullable": true
+                    },
+                    "first_name": {
+                        "type": "string",
+                        "nullable": true
+                    },
+                    "last_name": {
+                        "type": "string",
+                        "nullable": true
+                    },
+                    "mail": {
+                        "type": "string",
+                        "nullable": true
+                    },
+                    "role": {
+                        "description": "`eleves`, `profs`, `administratifs` ou `autre`.",
+                        "type": "string"
+                    },
+                    "class": {
+                        "type": "string",
+                        "nullable": true
+                    },
+                    "active": {
+                        "description": "Compte activé ; un compte créé par l'API naît désactivé.",
+                        "type": "boolean"
+                    },
+                    "identifiers": {
+                        "$ref": "#/components/schemas/UserIdentifiers"
+                    },
+                    "created_at": {
+                        "description": "ISO 8601 UTC.",
+                        "type": "string",
+                        "nullable": true
+                    },
+                    "changed_at": {
+                        "description": "ISO 8601 UTC.",
+                        "type": "string",
+                        "nullable": true
+                    }
+                },
+                "type": "object"
+            },
+            "UserCreateRequest": {
+                "description": "Corps de création d'un compte (≤ 8 192 octets) : un objet ; toute autre clé est refusée (`422`, nommée). Chaînes rognées ; une valeur facultative vide vaut absente.",
+                "required": [
+                    "first_name",
+                    "last_name",
+                    "role",
+                    "gpei_id"
+                ],
+                "properties": {
+                    "first_name": {
+                        "type": "string",
+                        "maxLength": 64,
+                        "minLength": 1
+                    },
+                    "last_name": {
+                        "type": "string",
+                        "maxLength": 64,
+                        "minLength": 1
+                    },
+                    "role": {
+                        "type": "string",
+                        "enum": [
+                            "eleves",
+                            "profs",
+                            "administratifs"
+                        ]
+                    },
+                    "gpei_id": {
+                        "description": "Identifiant GPEI : ni virgule, ni espace.",
+                        "type": "string",
+                        "pattern": "^[0-9A-Za-z_-]{1,64}$"
+                    },
+                    "birth_date": {
+                        "description": "Date passée, jamais servie en retour (api-v1.md § 11 e).",
+                        "type": "string",
+                        "format": "date"
+                    },
+                    "mail": {
+                        "type": "string",
+                        "format": "email",
+                        "maxLength": 255
+                    },
+                    "function": {
+                        "description": "Sous-unité d'un administratif.",
+                        "type": "string",
+                        "maxLength": 64
+                    }
+                },
+                "type": "object",
+                "additionalProperties": false
+            },
+            "HardwareMeasurement": {
+                "description": "La dernière mesure matérielle d'un établissement pour une extension productrice : huit clés toujours présentes, dans cet ordre.",
+                "required": [
+                    "instance_id",
+                    "extension_key",
+                    "extension_version",
+                    "message_id",
+                    "kind",
+                    "collected_at",
+                    "received_at",
+                    "payload"
+                ],
+                "properties": {
+                    "instance_id": {
+                        "description": "uuid de l'établissement, minuscules.",
+                        "type": "string"
+                    },
+                    "extension_key": {
+                        "description": "Clé du manifeste SE5 de l'extension productrice.",
+                        "type": "string"
+                    },
+                    "extension_version": {
+                        "description": "Version installée de l'extension productrice, transmise par l'instance ; `null` si absente.",
+                        "type": "string",
+                        "nullable": true
+                    },
+                    "message_id": {
+                        "description": "uuid du message, engendré par l'extension productrice.",
+                        "type": "string"
+                    },
+                    "kind": {
+                        "description": "Format de la charge : `hardware/v1` en v1.",
+                        "type": "string"
+                    },
+                    "collected_at": {
+                        "description": "Horodatage de collecte (horloge de l'établissement), ISO 8601 UTC.",
+                        "type": "string",
+                        "format": "date-time"
+                    },
+                    "received_at": {
+                        "description": "Horodatage de réception par IRUNDO, ISO 8601 UTC ; plafonne collected_at pour classer les mesures.",
+                        "type": "string",
+                        "format": "date-time"
+                    },
+                    "payload": {
+                        "description": "La charge `hardware/v1` normalisée (liste blanche) : contrat-mesures-materielles-v1.md § 5, schéma hardware-v1.schema.json. Toute clé est optionnelle ; une clé inconnue s'ignore (ajout).",
+                        "type": "object",
+                        "additionalProperties": true
+                    }
+                },
+                "type": "object"
+            },
+            "PerimeterResponse": {
+                "required": [
+                    "perimeter",
+                    "reduced"
+                ],
+                "properties": {
+                    "perimeter": {
+                        "description": "Triés par `id`.",
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/PerimeterEntry"
+                        }
+                    },
+                    "reduced": {
+                        "description": "`true` quand le périmètre effectif est un sous-ensemble strict du claim du jeton.",
+                        "type": "boolean"
+                    }
+                },
+                "type": "object"
+            },
+            "InstancesResponse": {
+                "required": [
+                    "instances",
+                    "reduced"
+                ],
+                "properties": {
+                    "instances": {
+                        "description": "Triés par `id` (ordre d'octets).",
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/Instance"
+                        }
+                    },
+                    "reduced": {
+                        "description": "`true` quand le périmètre effectif est un sous-ensemble strict du claim du jeton.",
+                        "type": "boolean"
+                    }
+                },
+                "type": "object"
+            },
+            "InstanceResponse": {
+                "required": [
+                    "instance",
+                    "reduced"
+                ],
+                "properties": {
+                    "instance": {
+                        "$ref": "#/components/schemas/Instance"
+                    },
+                    "reduced": {
+                        "description": "`true` quand le périmètre effectif est un sous-ensemble strict du claim du jeton.",
+                        "type": "boolean"
+                    }
+                },
+                "type": "object"
+            },
+            "ObjectsResponse": {
+                "required": [
+                    "objects",
+                    "reduced"
+                ],
+                "properties": {
+                    "objects": {
+                        "description": "Les objets de l'extension appelante sur l'établissement, triés par clé ; `[]` si aucun.",
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/ObjectSummary"
+                        }
+                    },
+                    "reduced": {
+                        "description": "`true` quand le périmètre effectif est un sous-ensemble strict du claim du jeton.",
+                        "type": "boolean"
+                    }
+                },
+                "type": "object"
+            },
+            "ObjectResponse": {
+                "required": [
+                    "object",
+                    "reduced"
+                ],
+                "properties": {
+                    "object": {
+                        "$ref": "#/components/schemas/Object"
+                    },
+                    "reduced": {
+                        "description": "`true` quand le périmètre effectif est un sous-ensemble strict du claim du jeton.",
+                        "type": "boolean"
+                    }
+                },
+                "type": "object"
+            },
+            "UserResponse": {
+                "required": [
+                    "user",
+                    "reduced"
+                ],
+                "properties": {
+                    "user": {
+                        "$ref": "#/components/schemas/User"
+                    },
+                    "reduced": {
+                        "description": "`true` quand le périmètre effectif est un sous-ensemble strict du claim du jeton.",
+                        "type": "boolean"
+                    }
+                },
+                "type": "object"
+            },
+            "HardwareResponse": {
+                "required": [
+                    "hardware",
+                    "reduced"
+                ],
+                "properties": {
+                    "hardware": {
+                        "description": "Une entrée par (établissement, extension productrice), triées par `instance_id` puis `extension_key` (ordre d'octets) ; `[]` si aucune mesure.",
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/HardwareMeasurement"
+                        }
+                    },
+                    "reduced": {
+                        "description": "`true` quand le périmètre effectif est un sous-ensemble strict du claim du jeton.",
+                        "type": "boolean"
+                    }
+                },
+                "type": "object"
+            },
+            "UserCreatedResponse": {
+                "required": [
+                    "user",
+                    "reduced",
+                    "warnings"
+                ],
+                "properties": {
+                    "user": {
+                        "$ref": "#/components/schemas/User"
+                    },
+                    "reduced": {
+                        "description": "`true` quand le périmètre effectif est un sous-ensemble strict du claim du jeton.",
+                        "type": "boolean"
+                    },
+                    "warnings": {
+                        "description": "Incidents survenus **après** la création (le compte existe) ; `[]` par défaut. Valeurs v1 : `birthdate_withheld`, `bookkeeping_failed`, `readback_failed` (api-v1.md § 11 c) ; une valeur inconnue s'ignore (ajout).",
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        }
+                    }
+                },
+                "type": "object"
+            }
+        },
+        "responses": {
+            "Unauthorized": {
+                "description": "Aucun bearer : **corps vide** (le contenu JSON décrit ci-dessous est alors absent), `WWW-Authenticate: Bearer realm=\"irundoo-extensions\"` sans `error`. Bearer refusé (toute cause : signature, expiration, révocation, audience) : corps `invalid_token`, corps et en-tête identiques quelle que soit la cause. Conduite : ré-autoriser une fois, jamais en boucle. Non débité du quota de l'extension ; un bearer refusé compte dans le plafond par adresse des jetons refusés (`RateLimited`).",
+                "headers": {
+                    "WWW-Authenticate": {
+                        "$ref": "#/components/headers/WWW-Authenticate"
+                    }
+                },
+                "content": {
+                    "application/json": {
+                        "schema": {
+                            "$ref": "#/components/schemas/Error"
+                        }
+                    }
+                }
+            },
+            "Forbidden": {
+                "description": "Refus de la garde, jeton vivant : `insufficient_scope` (scope requis non accordé ; `WWW-Authenticate` porte `error=\"insufficient_scope\"`), `perimeter_empty` (aucun établissement accordé), `out_of_perimeter` (instance désignée hors périmètre, inconnue ou mal formée : réponse identique). Débité du quota.",
+                "headers": {
+                    "X-RateLimit-Limit": {
+                        "$ref": "#/components/headers/X-RateLimit-Limit"
+                    },
+                    "X-RateLimit-Remaining": {
+                        "$ref": "#/components/headers/X-RateLimit-Remaining"
+                    }
+                },
+                "content": {
+                    "application/json": {
+                        "schema": {
+                            "anyOf": [
+                                {
+                                    "$ref": "#/components/schemas/ErrorInsufficientScope"
+                                },
+                                {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            ]
+                        }
+                    }
+                }
+            },
+            "ForbiddenUserRoute": {
+                "description": "Refus de la garde sur une route à jeton utilisateur : les trois causes de `Forbidden`, plus `user_token_required` (jeton machine) et `insufficient_right` (l'utilisateur du jeton ne détient pas le droit IRUNDO requis, relu à chaque appel ; `right` le nomme). Ordre : scope → périmètre → jeton utilisateur → droit. Débité du quota.",
+                "headers": {
+                    "X-RateLimit-Limit": {
+                        "$ref": "#/components/headers/X-RateLimit-Limit"
+                    },
+                    "X-RateLimit-Remaining": {
+                        "$ref": "#/components/headers/X-RateLimit-Remaining"
+                    }
+                },
+                "content": {
+                    "application/json": {
+                        "schema": {
+                            "anyOf": [
+                                {
+                                    "$ref": "#/components/schemas/ErrorInsufficientScope"
+                                },
+                                {
+                                    "$ref": "#/components/schemas/ErrorInsufficientRight"
+                                },
+                                {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            ]
+                        }
+                    }
+                }
+            },
+            "RateLimited": {
+                "description": "`rate_limited`, corps identique quelle que soit la borne atteinte : quota de l'extension (300 appels par minute, tous jetons et toutes routes confondus ; prime sur un `403`), plafond par jeton présenté, ou l'un des deux plafonds **par adresse IP** — jetons refusés en `401` depuis l'adresse, appels sans jeton (seau anonyme). Un `429` est donc possible sans jeton valide. `Retry-After` toujours présent ; les `X-RateLimit-*` sont facultatifs (le plafond des jetons refusés ne pose pas `X-RateLimit-Reset`). Conduite : attendre `Retry-After` secondes.",
+                "headers": {
+                    "Retry-After": {
+                        "$ref": "#/components/headers/Retry-After"
+                    },
+                    "X-RateLimit-Limit": {
+                        "$ref": "#/components/headers/X-RateLimit-Limit"
+                    },
+                    "X-RateLimit-Remaining": {
+                        "$ref": "#/components/headers/X-RateLimit-Remaining"
+                    },
+                    "X-RateLimit-Reset": {
+                        "$ref": "#/components/headers/X-RateLimit-Reset"
+                    }
+                },
+                "content": {
+                    "application/json": {
+                        "schema": {
+                            "$ref": "#/components/schemas/Error"
+                        }
+                    }
+                }
+            },
+            "ServerUnavailable": {
+                "description": "`server_error` : la vérification du jeton est indisponible (clé publiée illisible), état du serveur et non du jeton ; non débité. Conduite : rejouer plus tard.",
+                "content": {
+                    "application/json": {
+                        "schema": {
+                            "$ref": "#/components/schemas/Error"
+                        }
+                    }
+                }
+            },
+            "UsersUnavailable": {
+                "description": "`server_error` (garde, comme `ServerUnavailable`) ou `directory_unavailable` (ressource : annuaire injoignable, création concurrente du même `gpei_id` ou du même login en cours, sous-arbre de l'établissement absent), ce dernier avec `Retry-After`. Conduite : rejouer, pas plus vite que `Retry-After`.",
+                "headers": {
+                    "Retry-After": {
+                        "$ref": "#/components/headers/Retry-After"
+                    }
+                },
+                "content": {
+                    "application/json": {
+                        "schema": {
+                            "$ref": "#/components/schemas/Error"
+                        }
+                    }
+                }
+            }
+        },
+        "parameters": {
+            "InstanceQuery": {
+                "name": "instance",
+                "in": "query",
+                "description": "uuid d'un établissement du périmètre (insensible à la casse) : réduit la liste à lui. Hors périmètre, inconnu ou mal formé : `403 out_of_perimeter`, réponse identique.",
+                "required": false,
+                "schema": {
+                    "type": "string"
+                }
+            },
+            "InstancePath": {
+                "name": "instance",
+                "in": "path",
+                "description": "uuid d'un établissement du périmètre (insensible à la casse), aucune contrainte de forme côté routeur. Hors périmètre, inconnu ou mal formé : `403 out_of_perimeter`, réponse identique.",
+                "required": true,
+                "schema": {
+                    "type": "string"
+                }
+            },
+            "ObjectKey": {
+                "name": "key",
+                "in": "path",
+                "description": "Clé de l'objet : 1 à 64 caractères `[a-z0-9._-]`, ni `.`, ni `_`, ni `-` en tête ou en fin. Mal formée : `422 invalid_request` nommant `key`.",
+                "required": true,
+                "schema": {
+                    "type": "string"
+                }
+            },
+            "Login": {
+                "name": "login",
+                "in": "path",
+                "description": "`sAMAccountName` du compte. Inconnu, rattaché à un autre établissement ou hors forme : `404 user_not_found`, réponse identique.",
+                "required": true,
+                "schema": {
+                    "type": "string"
+                }
+            },
+            "IfMatch": {
+                "name": "If-Match",
+                "in": "header",
+                "description": "`\"<etag>\"` (fort, 32 hexadécimaux minuscules entre guillemets) : remplacer ou supprimer l'objet courant. Exactement une précondition par écriture (api-v1.md § 10).",
+                "required": false,
+                "schema": {
+                    "type": "string"
+                }
+            },
+            "IfNoneMatch": {
+                "name": "If-None-Match",
+                "in": "header",
+                "description": "`*` : créer l'objet, refusé (`412`) s'il existe. Exactement une précondition par écriture (api-v1.md § 10).",
+                "required": false,
+                "schema": {
+                    "type": "string"
+                }
+            }
+        },
+        "headers": {
+            "X-RateLimit-Limit": {
+                "description": "Quota de l'extension par fenêtre d'une minute.",
+                "schema": {
+                    "type": "integer"
+                }
+            },
+            "X-RateLimit-Remaining": {
+                "description": "Appels restants dans la fenêtre courante.",
+                "schema": {
+                    "type": "integer"
+                }
+            },
+            "X-RateLimit-Reset": {
+                "description": "Horodatage Unix de la fin de la fenêtre.",
+                "schema": {
+                    "type": "integer"
+                }
+            },
+            "Retry-After": {
+                "description": "Délai minimal avant de rejouer, en secondes.",
+                "schema": {
+                    "type": "integer"
+                }
+            },
+            "ETag": {
+                "description": "Validateur fort de l'objet : `\"<etag>\"`, aléatoire, régénéré à chaque écriture.",
+                "schema": {
+                    "type": "string"
+                }
+            },
+            "Location": {
+                "description": "Le compte créé, en **chemin absolu côté serveur**, préfixe de publication compris (ex. `/controlhub/api/v1/extensions/instances/{instance}/users/{login}` sous `https://irundo.example.org/controlhub`) : à résoudre contre l'**origine** de l'issuer (schéma et hôte), jamais à concaténer à l'issuer entier.",
+                "schema": {
+                    "type": "string"
+                }
+            },
+            "WWW-Authenticate": {
+                "description": "`Bearer realm=\"irundoo-extensions\"`, suivi de `error`, `error_description` (et `scope`) sur un bearer refusé.",
+                "schema": {
+                    "type": "string"
+                }
+            }
+        },
+        "securitySchemes": {
+            "irundooOidc": {
+                "type": "oauth2",
+                "description": "Fournisseur OIDC d'IRUNDO. Lire les adresses dans la Discovery (`{issuer}/.well-known/openid-configuration`), jamais les coder. `authorization_code` : PKCE `S256` obligatoire, jeton utilisateur. `client_credentials` : jeton machine, scopes `machine_scopes` accordés. Le jeton se présente en `Authorization: Bearer` seul. Un scope accordé par l'administrateur ne vaut qu'avec un périmètre accordé.",
+                "flows": {
+                    "authorizationCode": {
+                        "authorizationUrl": "{issuer}/oidc/authorize",
+                        "tokenUrl": "{issuer}/oidc/token",
+                        "scopes": {
+                            "openid": "Identifier l'utilisateur (OIDC)",
+                            "irundoo:perimeter:read": "Lire la liste des établissements du périmètre",
+                            "irundoo:instances:read": "Lire les établissements du périmètre (nom, UAI, type)",
+                            "irundoo:objects:read": "Lire les objets que l'application a déposés par établissement",
+                            "irundoo:objects:write": "Déposer, remplacer et supprimer ses propres objets par établissement",
+                            "irundoo:users:read": "Lire un compte de l'annuaire d'un établissement, au nom d'un utilisateur ayant le droit « Consulter l'annuaire AD »",
+                            "irundoo:users:write": "Créer un compte dans l'annuaire d'un établissement, au nom d'un utilisateur ayant le droit « Gérer l'annuaire AD »",
+                            "irundoo:hardware:read": "Lire la dernière mesure matérielle relayée par les établissements du périmètre"
+                        }
+                    },
+                    "clientCredentials": {
+                        "tokenUrl": "{issuer}/oidc/token",
+                        "scopes": {
+                            "irundoo:perimeter:read": "Lire la liste des établissements du périmètre",
+                            "irundoo:instances:read": "Lire les établissements du périmètre (nom, UAI, type)",
+                            "irundoo:objects:read": "Lire les objets que l'application a déposés par établissement",
+                            "irundoo:objects:write": "Déposer, remplacer et supprimer ses propres objets par établissement",
+                            "irundoo:users:read": "Lire un compte de l'annuaire d'un établissement, au nom d'un utilisateur ayant le droit « Consulter l'annuaire AD »",
+                            "irundoo:users:write": "Créer un compte dans l'annuaire d'un établissement, au nom d'un utilisateur ayant le droit « Gérer l'annuaire AD »",
+                            "irundoo:hardware:read": "Lire la dernière mesure matérielle relayée par les établissements du périmètre"
+                        }
+                    }
+                }
+            }
+        }
+    },
+    "tags": [
+        {
+            "name": "Périmètre",
+            "description": "Le périmètre effectif de l'extension : les établissements que l'administrateur lui a accordés."
+        },
+        {
+            "name": "Établissements",
+            "description": "Les établissements du périmètre (nom, UAI, type)."
+        },
+        {
+            "name": "Objets",
+            "description": "Les documents JSON propres à l'extension, par établissement (api-v1.md § 10)."
+        },
+        {
+            "name": "Comptes",
+            "description": "Les comptes de l'annuaire d'un établissement, au nom d'un utilisateur IRUNDO détenant le droit requis (api-v1.md § 11)."
+        },
+        {
+            "name": "Mesures",
+            "description": "Les mesures matérielles relayées par les établissements du périmètre (api-v1.md § 13 ; contrat-mesures-materielles-v1.md)."
+        }
+    ]
+}

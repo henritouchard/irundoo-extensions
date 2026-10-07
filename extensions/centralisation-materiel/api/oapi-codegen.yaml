@@ -1,0 +1,12 @@
+# Client API généré depuis la spécification publique d'IRUNDO (testdata/openapi-v1.json, copie datée).
+# Régénérer : make generate. Ne jamais éditer le fichier généré : compléter dans internal/irundoo.
+package: irundooapi
+output: client.gen.go   # relatif au paquet (go generate s'exécute dans internal/irundoo/irundooapi)
+generate:
+  client: true
+  models: true
+output-options:
+  # Seules les opérations lues par la centralisatrice : moindre surface.
+  include-operation-ids:
+    - api.extensions.v1.instances
+    - api.extensions.v1.hardware

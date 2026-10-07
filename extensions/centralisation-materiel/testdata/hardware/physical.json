@@ -1,0 +1,19 @@
+{
+  "sources": {"local": "ok", "redfish": "unauthorized", "pve": "absent"},
+  "host": {"profile": "physical", "virt": "none", "vendor": "Dell Inc.", "model": "PowerEdge R650", "board": "0XXXXX", "bios_version": "1.13.2", "bios_date": "2024-03-14"},
+  "os": {"id": "debian", "version": "12", "kernel": "6.1.0-25-amd64", "uptime_s": 1466698, "boot_id": "3f2a9c1e-5b7d-4e8a-9c0f-1d2e3f4a5b6c"},
+  "cpu": {"model": "Intel(R) Xeon(R) Silver 4310 CPU @ 2.10GHz", "count": 24, "load1": 0.42, "load5": 0.37, "load15": 0.30,
+          "temp_c": [{"sensor": "coretemp/Package id 0", "value": 48, "crit": 98}, {"sensor": "coretemp/Package id 1", "value": 46, "crit": 98}]},
+  "mem": {"total_b": 68719476736, "available_b": 34359738368, "swap_total_b": 1073741824, "swap_free_b": 1073741824,
+          "edac": [{"mc": "mc0", "ce": 0, "ue": 0, "size_b": 34359738368}, {"mc": "mc1", "ce": 0, "ue": 0, "size_b": 34359738368}]},
+  "disk": [
+    {"name": "sda", "model": "PERC H755 Front", "serial_masked": "************a1b2", "size_b": 959119884288, "rotational": false, "transport": "", "driver": "megaraid_sas", "ioerr": 0},
+    {"name": "sdb", "model": "PERC H755 Front", "serial_masked": "************c3d4", "size_b": 3998614552576, "rotational": true, "transport": "", "driver": "megaraid_sas", "ioerr": 0}
+  ],
+  "fs": [
+    {"mount": "/", "fstype": "ext4", "size_b": 105089261568, "used_b": 31526778470, "inodes_used_pct": 12},
+    {"mount": "/home", "fstype": "xfs", "size_b": 3298534883328, "used_b": 1659062731571, "inodes_used_pct": 4},
+    {"mount": "/var/sambaedu", "fstype": "xfs", "size_b": 214748364800, "used_b": 85899345920, "inodes_used_pct": 2}
+  ],
+  "md": []
+}

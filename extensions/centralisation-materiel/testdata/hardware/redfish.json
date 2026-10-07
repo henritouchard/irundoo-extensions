@@ -1,0 +1,17 @@
+{
+  "sources": {"local": "ok", "redfish": "ok", "pve": "absent"},
+  "redfish": {
+    "scope": "hypervisor-host",
+    "system": {"health": "OK", "health_rollup": "Warning", "model": "PowerEdge R650", "sku_masked": "***1234"},
+    "drive": [
+      {"id": "Disk.Bay.0", "model": "MZ7L3480", "media": "SSD", "capacity_b": 479559942144, "health": "OK", "failure_predicted": false, "life_left_pct": 99},
+      {"id": "Disk.Bay.1", "model": "MZ7L3480", "media": "SSD", "capacity_b": 479559942144, "health": "OK", "failure_predicted": false, "life_left_pct": 98},
+      {"id": "Disk.Bay.2", "model": "ST4000NM013A", "media": "HDD", "capacity_b": 3999999999999, "health": "OK", "failure_predicted": false},
+      {"id": "Disk.Bay.3", "model": "ST4000NM013A", "media": "HDD", "capacity_b": 3999999999999, "health": "Warning", "failure_predicted": true}
+    ],
+    "thermal": {"temperatures": [{"name": "System Board Inlet Temp", "value_c": 22, "health": "OK"}, {"name": "System Board Exhaust Temp", "value_c": 35, "health": "OK"}],
+                "fans": [{"name": "Fan1A", "rpm": 5400, "health": "OK"}, {"name": "Fan2A", "rpm": 5400, "health": "OK"}, {"name": "Fan3A", "rpm": 5520, "health": "OK"}, {"name": "Fan4A", "rpm": 5400, "health": "OK"}]},
+    "power": {"supplies": [{"name": "PS1 Status", "health": "OK"}, {"name": "PS2 Status", "health": "Critical"}], "redundancy": "Degraded", "consumed_w": 182},
+    "sel_tail": [{"timestamp": "2026-10-01T10:00:00Z", "severity": "Critical", "message_id": "PSU0003"}]
+  }
+}

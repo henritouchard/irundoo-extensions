@@ -1,0 +1,16 @@
+{
+  "format": "irundoo-extension-manifest",
+  "version": 1,
+  "id": "centralisation-materiel-dev",
+  "name": "État matériel des établissements (développement)",
+  "extension_version": "0.1.0-dev",
+  "publisher": "Henri Touchard",
+  "type": "app",
+  "entry_url": "https://127.0.0.1:8090/",
+  "icon": "fa-solid fa-microchip",
+  "description": "Instance de développement de la centralisatrice : écoute en HTTP sur 127.0.0.1:8090, ouverte directement (pas par la tuile). Jamais publiée dans l'index.",
+  "redirect_uris": ["http://127.0.0.1:8090/oidc/callback"],
+  "health_url": "https://127.0.0.1:8090/health",
+  "user_scopes": ["irundoo:instances:read", "irundoo:hardware:read"],
+  "machine_scopes": ["irundoo:instances:read", "irundoo:hardware:read"]
+}

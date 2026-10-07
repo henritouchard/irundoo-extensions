@@ -1,0 +1,17 @@
+{
+  "sources": {"local": "ok", "redfish": "absent", "pve": "absent"},
+  "host": {"profile": "vm", "virt": "kvm", "vendor": "QEMU", "model": "Standard PC (Q35 + ICH9, 2009)", "bios_version": "1.16.3-debian-1.16.3-2", "bios_date": "2014-04-01"},
+  "os": {"id": "debian", "version": "12", "kernel": "6.1.0-25-amd64", "uptime_s": 1466698, "boot_id": "3f2a9c1e-5b7d-4e8a-9c0f-1d2e3f4a5b6c"},
+  "cpu": {"model": "Intel(R) Xeon(R) Silver 4310 CPU @ 2.10GHz", "count": 4, "load1": 0.42, "load5": 0.37, "load15": 0.30},
+  "mem": {"total_b": 8589934592, "available_b": 4294967296, "swap_total_b": 1073741824, "swap_free_b": 1073741824},
+  "disk": [
+    {"name": "vda", "model": "", "serial_masked": "", "size_b": 107374182400, "rotational": true, "transport": "", "driver": "virtio_blk"},
+    {"name": "vdb", "model": "", "serial_masked": "", "size_b": 1099511627776, "rotational": true, "transport": "", "driver": "virtio_blk"}
+  ],
+  "fs": [
+    {"mount": "/", "fstype": "ext4", "size_b": 105089261568, "used_b": 31526778470, "inodes_used_pct": 12},
+    {"mount": "/home", "fstype": "xfs", "size_b": 1098437885952, "used_b": 659062731571, "inodes_used_pct": 4},
+    {"mount": "/var/sambaedu", "fstype": "xfs", "size_b": 214748364800, "used_b": 85899345920, "inodes_used_pct": 2}
+  ],
+  "md": []
+}
