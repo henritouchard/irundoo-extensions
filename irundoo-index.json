@@ -1,10 +1,34 @@
 {
     "format": "irundoo-extensions-index",
     "version": 1,
-    "serial": 1793814609,
+    "serial": 1793814884,
     "name": "Extensions IRUNDO",
     "publisher": "Henri Touchard",
     "extensions": [
+        {
+            "format": "irundoo-extension-manifest",
+            "version": 1,
+            "id": "centralisation-materiel",
+            "name": "État matériel des établissements",
+            "extension_version": "0.1.0",
+            "publisher": "Henri Touchard",
+            "type": "app",
+            "entry_url": "https://centralisation-materiel.example.org/",
+            "icon": "fa-solid fa-microchip",
+            "description": "État matériel des serveurs SambaÉdu du périmètre : disques, RAID, alimentations, températures, mémoire, remplissage des volumes ; distingue « pas de nouvelle » et « matériel non observé » d'un état sain.",
+            "redirect_uris": [
+                "https://centralisation-materiel.example.org/oidc/callback"
+            ],
+            "health_url": "https://centralisation-materiel.example.org/health",
+            "user_scopes": [
+                "irundoo:instances:read",
+                "irundoo:hardware:read"
+            ],
+            "machine_scopes": [
+                "irundoo:instances:read",
+                "irundoo:hardware:read"
+            ]
+        },
         {
             "format": "irundoo-extension-manifest",
             "version": 1,
