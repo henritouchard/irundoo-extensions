@@ -25,10 +25,11 @@ php artisan ext:sources:add https://raw.githubusercontent.com/henritouchard/irun
 ## Publier
 
 1. Ajouter ou modifier `extensions/<id>/manifest.json` (le dossier porte l'`id`).
-2. `php scripts/publish.php` : reconstruit l'index, incrémente `serial`, signe et vérifie.
+2. `php scripts/publish.php --key ../extenstion-keys/irundoo-extensions.key` : reconstruit l'index, incrémente `serial`, signe et vérifie.
 3. Commiter les trois fichiers ensemble, puis pousser.
 
 Ne jamais retoucher `irundoo-index.json` après signature (`.gitattributes` empêche git de le
-réécrire). La clé secrète vit hors du dépôt (`~/.config/irundoo-extensions/secret.key`, ou
+réécrire). La clé secrète vit hors du dépôt, sur l'hôte de publication (`--key <chemin>`, sinon
+`IRUNDO_INDEX_SECRET_KEY_FILE`, défaut `~/.config/irundoo-extensions/secret.key`, ou
 `IRUNDO_INDEX_SECRET_KEY`) ; la perdre oblige à publier une nouvelle clé, que chaque IRUNDO doit
 retirer puis réajouter après vérification de l'empreinte.

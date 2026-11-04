@@ -5,21 +5,29 @@
  * signe l'index (Ed25519) et vérifie la signature avec source.pub.
  *
  * Clé secrète (base64, 64 octets) : variable IRUNDO_INDEX_SECRET_KEY, sinon le fichier désigné
- * par IRUNDO_INDEX_SECRET_KEY_FILE (défaut : ~/.config/irundoo-extensions/secret.key).
+ * par --key <chemin>, sinon IRUNDO_INDEX_SECRET_KEY_FILE (défaut : ~/.config/irundoo-extensions/secret.key).
  * La clé ne va jamais dans le dépôt.
  *
- * Usage : php scripts/publish.php [--init-key]
- *   --init-key : génère la paire de clés si le fichier de clé n'existe pas, et écrit source.pub.
+ * Usage : php scripts/publish.php [--key <chemin>] [--init-key]
+ *   --key <chemin> : fichier de la clé secrète, comme publish.sh --key côté sambaedu-extensions.
+ *   --init-key     : génère la paire de clés si le fichier de clé n'existe pas, et écrit source.pub.
  */
 
 $root = dirname(__DIR__);
-$keyFile = getenv('IRUNDO_INDEX_SECRET_KEY_FILE') ?: getenv('HOME').'/.config/irundoo-extensions/secret.key';
 
 function fail(string $message): never
 {
     fwrite(STDERR, "Erreur : {$message}\n");
     exit(1);
 }
+
+$keyOption = array_search('--key', $argv, true);
+if ($keyOption !== false && ! isset($argv[$keyOption + 1])) {
+    fail('--key attend un chemin de fichier.');
+}
+$keyFile = $keyOption !== false
+    ? $argv[$keyOption + 1]
+    : (getenv('IRUNDO_INDEX_SECRET_KEY_FILE') ?: getenv('HOME').'/.config/irundoo-extensions/secret.key');
 
 if (in_array('--init-key', $argv, true)) {
     if (file_exists($keyFile)) {
